@@ -371,6 +371,20 @@ def filter_items_by_query(items: List[ModItem], query: str) -> List[ModItem]:
         return items
     return [m for m in items if q in m.name.lower()]
 
+# ---- Sorting support ----
+
+def sort_items(items: List[ModItem], order_mode: str) -> List[ModItem]:
+    # Supports short and full names:
+    # 'd' or 'default' -> default order (files grouped & name asc)
+    # 'cd' or 'created date' -> by creation time (ctime)
+    if order_mode in ["cd", "created date"]:
+        try:
+            return sorted(items, key=lambda m: m.src.stat().st_ctime, reverse=True)
+        except Exception:
+            # Fallback to default order if stat not available
+            pass
+    return sorted(items, key=lambda m: ((not m.is_dir), m.name.lower()))
+
 # Unified mods list & toggle (install/uninstall) with search
 
 def menu_mods_toggle(cfg: Dict):
@@ -378,16 +392,23 @@ def menu_mods_toggle(cfg: Dict):
         return
     page = 1
     search_query = ""
+    order_mode = "d"
     while True:
         os.system("cls" if is_windows() else "clear")
         items_all = discover_mods(cfg)
         items = filter_items_by_query(items_all, search_query)
+        items = sort_items(items, order_mode)
         if not items:
             print("Mods — install/uninstall (toggle)")
             print("=" * PRINT_SIZE)
+            if order_mode == "d":
+                print("Order: default ↓")
+            else:
+                print("Order: created date ↓")
             print(f"Filter: '{search_query}' (no matches)")
             print("\nCommands:")
             print("  - f <text>: (filter)")
+            print("  - o: <orderType> order mode (d or default, cd or created date)")
             print("  - clear: (clear filter)")
             print("  - 0: Back")
             choice = prompt("> ").strip()
@@ -407,6 +428,10 @@ def menu_mods_toggle(cfg: Dict):
         shown = page_slice(items, page)
         print("Mods — install/uninstall (toggle)")
         print("=" * PRINT_SIZE)
+        if order_mode == "d":
+            print("Order: default ↓")
+        else:
+            print("Order: created date ↓")
         if search_query:
             print(f"Filter: '{search_query}'")
         for i, m in enumerate(shown, 1):
@@ -417,6 +442,7 @@ def menu_mods_toggle(cfg: Dict):
         print_pager(pages, page)
         print("Commands:")
         print("  - f: <text> (search) | clear: (clear search filter)")
+        print("  - o: <orderType> order mode (d or default, cd or created date)")
         print("  - numbers (comma-separated): toggle selected")
         print("  - a: Uninstall ALL (current page)")
         print("  - i: Install ALL (current page)")
@@ -432,6 +458,17 @@ def menu_mods_toggle(cfg: Dict):
         if low.startswith("f ") or low.startswith("find "):
             search_query = choice.split(" ", 1)[1].strip()
             page = 1
+            continue
+        if low.startswith("o "):
+            arg = low.split(" ", 1)[1].strip()
+            if arg in ["d", "default"]:
+                order_mode = "d"
+                print("Order mode set to: default")
+            elif arg in ["cd", "created date"]:
+                order_mode = "cd"
+                print("Order mode set to: created date")
+            else:
+                print("Invalid order mode. Use: d, default, cd, or created date.")
             continue
         if low == "a":
             for idx, m in enumerate(shown, start=1):
