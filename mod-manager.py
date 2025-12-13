@@ -6,6 +6,7 @@ import json
 import os
 import platform
 import subprocess
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -535,13 +536,45 @@ def menu_presets(cfg: Dict):
         if choice == "0":
             return
         # save new preset
-        if choice.lower() == "s":
+        low = choice.strip().lower()
+
+        if low == "s" or low == "s:":
             name = prompt("Enter new preset name: ").strip()
             if not name:
                 print("Canceled — empty name")
             else:
                 ok, msg = save_preset_from_installed(cfg, name)
                 print(msg)
+            continue
+
+        if low.startswith("s ") or low.startswith("s:"):
+            # support: s name | s: name | s "name with spaces"
+            rest = choice.strip()[1:]  # remove leading 's'
+            if rest.startswith(":"):
+                rest = rest[1:]
+            rest = rest.strip()
+
+            if not rest:
+                print('Error: missing preset name. Use: s <name> or s "name with spaces"')
+                continue
+
+            try:
+                args = shlex.split(rest)
+            except ValueError:
+                print('Error: invalid name format. If you need spaces use: s "імя"')
+                continue
+
+            if len(args) != 1:
+                print('Error: preset name must be exactly 1 argument. If you need spaces use: s "імя"')
+                continue
+
+            name = args[0].strip()
+            if not name:
+                print("Canceled — empty name")
+                continue
+
+            ok, msg = save_preset_from_installed(cfg, name)
+            print(msg)
             continue
         # delete presets by numbers
         low = choice.lower()
