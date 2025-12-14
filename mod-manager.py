@@ -239,6 +239,10 @@ def prompt(msg: str) -> str:
     except EOFError:
         return ""
 
+def pause(msg: str = "Press Enter to continue...") -> None:
+    prompt(f"{msg}")
+
+
 def ensure_paths(cfg: Dict) -> bool:
     gs = cfg.get("game_mods_dir")
     ms = cfg.get("mods_source_dir")
@@ -392,6 +396,7 @@ def menu_mods_toggle(cfg: Dict):
     if not ensure_paths(cfg):
         return
     page = 1
+    last_operation = ""
     search_query = ""
     order_mode = "d"
     while True:
@@ -412,6 +417,7 @@ def menu_mods_toggle(cfg: Dict):
             print("  - o: <orderType> order mode (d or default, cd or created date)")
             print("  - clear: (clear filter)")
             print("  - 0: Back")
+            print(f"    {last_operation}")
             choice = prompt("> ").strip()
             if choice == "0":
                 return
@@ -448,6 +454,7 @@ def menu_mods_toggle(cfg: Dict):
         print("  - a: Uninstall ALL (current page)")
         print("  - i: Install ALL (current page)")
         print("  - pN: go to page N   |   0: back")
+        print(f"    {last_operation}")
         choice = prompt("> ").strip()
         if choice == "0":
             return
@@ -467,24 +474,30 @@ def menu_mods_toggle(cfg: Dict):
                 print("Order mode set to: default")
             elif arg in ["cd", "created date"]:
                 order_mode = "cd"
-                print("Order mode set to: created date")
+                last_operation = "Order mode set to: created date"
             else:
-                print("Invalid order mode. Use: d, default, cd, or created date.")
+                last_operation = "Invalid order mode. Use: d, default, cd, or created date."
             continue
         if low == "a":
             for idx, m in enumerate(shown, start=1):
                 if m.installed:
                     print(f"[{idx}/{len(shown)}] Uninstalling {m.name} ...")
                     deactivate_mod(m)
-            print("All on this page uninstalled.")
+            last_operation = "All on this page uninstalled."
             continue
         if low == "i":
             to_install = [m for m in shown if not m.installed]
             total = len(to_install)
+            err = 0
             for idx, m in enumerate(to_install, start=1):
                 print(f"[{idx}/{total}] Installing {m.name} ...")
-                apply_mod(m)
-            print(f"Installed {len(to_install)}/{total} on this page.")
+                ok, msg = apply_mod(m)
+                if not ok:
+                    err += 1
+                    print(f"  ERR — {msg}")
+            print(f"Installed {len(to_install) - err}/{total} on this page. Errors: {err}.")
+            if total > 0 & err > 0:
+                pause()
             continue
         page_sel = parse_page_choice(choice)
         if page_sel:
@@ -496,16 +509,17 @@ def menu_mods_toggle(cfg: Dict):
                 m = shown[num - 1]
                 if m.installed:
                     ok, msg = deactivate_mod(m)
-                    print(f"Uninstall {m.name}: {'OK' if ok else 'ERR'} — {msg}")
+                    last_operation = f"Uninstall {m.name}: {'OK' if ok else 'ERR'} — {msg}"
                 else:
                     ok, msg = apply_mod(m)
-                    print(f"Install {m.name}: {'OK' if ok else 'ERR'} — {msg}")
+                    last_operation = f"Install {m.name}: {'OK' if ok else 'ERR'} — {msg}"
 
 # Unified presets: save/apply/toggle/delete
 
 def menu_presets(cfg: Dict):
     if not ensure_paths(cfg):
         return
+    last_operation = ""
     page = 1
     while True:
         os.system("cls" if is_windows() else "clear")
@@ -532,6 +546,7 @@ def menu_presets(cfg: Dict):
         print("  - s: save current installed as a new preset (will ask for name)")
         print("  - d N,N2,...: delete selected presets by number(s)")
         print("  - pN: go to page N   |   0: back")
+        print(f"    {last_operation}")
         choice = prompt("> ").strip()
         if choice == "0":
             return
@@ -586,7 +601,7 @@ def menu_presets(cfg: Dict):
                 if 1 <= num <= len(page_keys):
                     to_delete.append(page_keys[num - 1])
             count, missing = delete_presets_by_names(to_delete)
-            print(f"Deleted: {count}. Missing: {', '.join(missing) if missing else 'none'}")
+            last_operation = f"Deleted: {count}. Missing: {', '.join(missing) if missing else 'none'}"
             continue
         # page change
         page_sel = parse_page_choice(choice)
@@ -602,10 +617,12 @@ def menu_presets(cfg: Dict):
                 all_on = bool(mods) and all(nm in installed_set for nm in mods)
                 if all_on:
                     okc, errc, msgs = deactivate_preset(cfg, name)
-                    print(f"Deactivated: {okc}, Errors: {errc}")
+                    last_operation = f"Deactivated: {okc}, Errors: {errc}"
                 else:
                     okc, errc, msgs = apply_preset(cfg, name)
-                    print(f"Installed: {okc}, Errors: {errc}")
+                    last_operation = f"Installed: {okc}, Errors: {errc}"
+                    if errc > 0:
+                        pause()
                 for m in msgs:
                     print(" - ", m)
 
