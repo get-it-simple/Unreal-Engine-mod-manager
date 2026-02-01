@@ -14,15 +14,17 @@ from typing import Dict, List, Tuple
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "config.json"
 PRESETS_PATH = APP_DIR / "presets.json"
+LABELS_PATH = APP_DIR / "labels.json"
 
-PAGE_SIZE = 20
+PAGE_SIZE = 10
 
 PRINT_SIZE = 48
 
 DEFAULT_CONFIG = {
     "mods_source_dir": "",
     "game_mods_dir": "",
-    "mod_extensions": ""
+    "mod_extensions": "",
+    "page_size": 10
 }
 
 @dataclass
@@ -62,6 +64,12 @@ def load_presets() -> Dict[str, List[str]]:
 
 def save_presets(presets: Dict[str, List[str]]) -> None:
     save_json(PRESETS_PATH, presets)
+
+def load_labels() -> Dict[str, str]:
+    return load_json(LABELS_PATH, {})
+
+def save_labels(labels: Dict[str, str]) -> None:
+    save_json(LABELS_PATH, labels)
 
 def parse_extensions(cfg: Dict) -> Tuple[bool, List[str]]:
     exts_raw = (cfg.get("mod_extensions") or "").strip()
@@ -147,6 +155,13 @@ def apply_mod(mod: ModItem) -> Tuple[bool, str]:
 
 def deactivate_mod(mod: ModItem) -> Tuple[bool, str]:
     return unlink_path(mod.dest)
+
+def get_mod_file_name(items: List[ModItem], page: int, file_name: str, cfg: Dict) -> str:
+    if file_name.isdigit() and int(file_name) > 0 and int(file_name) < int(cfg.get("page_size", 10)) + 1:
+        return items[int(file_name) - 1 + (int(cfg.get("page_size", 10)) * (page - 1))].name
+    else:
+        return file_name
+                            
 
 # ----------------------------- Presets -----------------------------
 
@@ -267,14 +282,14 @@ def parse_page_choice(choice: str) -> int | None:
         return int(c[1:])
     return None
 
-def paginate(total: int, page: int) -> Tuple[int, int]:
-    pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+def paginate(total: int, page: int, cfg: Dict) -> Tuple[int, int]:
+    pages = max(1, (total + int(cfg.get("page_size", 10)) - 1) // int(cfg.get("page_size", 10)))
     page = max(1, min(page, pages))
     return page, pages
 
-def page_slice(items: List, page: int) -> List:
-    start = (page - 1) * PAGE_SIZE
-    end = start + PAGE_SIZE
+def page_slice(items: List, page: int, cfg: Dict) -> List:
+    start = (page - 1) * int(cfg.get("page_size", 10))
+    end = start + int(cfg.get("page_size", 10))
     return items[start:end]
 
 def print_pager(pages: int, current: int):
@@ -283,7 +298,9 @@ def print_pager(pages: int, current: int):
     labels = []
     for i in range(1, pages + 1):
         labels.append(f"[p{i}]" if i != current else f"(p{i})")
-    print("Pages:", " ".join(labels))
+    print("Pages:")
+    for i in range(0, len(labels), 10):
+        print(" ".join(labels[i:i+10]))
 
 # ---- Open Folders ----
 
@@ -316,7 +333,7 @@ def menu_fix_broken(cfg: Dict):
         if not broken:
             print("No broken links detected.")
             return
-        page, pages = paginate(len(broken), page)
+        page, pages = paginate(len(broken), page, cfg)
         shown = page_slice(broken, page)
         print("Fix broken links — remove game links whose source is missing")
         print("=" * PRINT_SIZE)
@@ -354,8 +371,9 @@ def menu_settings(cfg: Dict):
         print(f"1) Game mods folder: {cfg.get('game_mods_dir') or '-not set-'}")
         print(f"2) Mods source folder: {cfg.get('mods_source_dir') or '-not set-'}")
         print(f"3) Mod file extensions: {cfg.get('mod_extensions') or '(all)'}")
+        print(f"4) Page size: {cfg.get('page_size') or 10}")
         print("\n0) Save and back\n")
-        choice = prompt("Select [0-3]: ").strip()
+        choice = prompt("Select [0-4]: ").strip()
         if choice == "1":
             p = prompt("Enter full path to game mods folder: ").strip().strip('"')
             cfg["game_mods_dir"] = str(Path(p).expanduser()) if p else cfg.get("game_mods_dir", "")
@@ -365,6 +383,12 @@ def menu_settings(cfg: Dict):
         elif choice == "3":
             p = prompt("Enter extensions (comma-separated) or leave empty for all: ").strip()
             cfg["mod_extensions"] = p
+        elif choice == "4":
+            p = prompt("Enter page size: ").strip()
+            if p.isdigit() and int(p) > 0:
+                cfg["page_size"] = int(p)
+            else:
+                print("incorect format, please enter a number")
         elif choice == "0":
             save_config(cfg)
             print("Saved.")
@@ -398,11 +422,16 @@ def menu_mods_toggle(cfg: Dict):
     page = 1
     last_operation = ""
     search_query = ""
+    label_filter = ""
     order_mode = "d"
     while True:
         os.system("cls" if is_windows() else "clear")
         items_all = discover_mods(cfg)
         items = filter_items_by_query(items_all, search_query)
+        labels = load_labels()
+        if label_filter:
+            lf = label_filter.lower()
+            items = [m for m in items if (labels.get(m.name) or "").lower() == lf]
         items = sort_items(items, order_mode)
         if not items:
             print("Mods — install/uninstall (toggle)")
@@ -411,9 +440,16 @@ def menu_mods_toggle(cfg: Dict):
                 print("Order: default ↓")
             else:
                 print("Order: created date ↓")
-            print(f"Filter: '{search_query}' (no matches)")
+            if label_filter:
+                print(f"Label: '{label_filter}'")
+            if search_query:
+                print(f"Filter: '{search_query}' (no matches)")
+            else:
+                print("Filter: '' (no matches)")
             print("\nCommands:")
             print("  - f <text>: (filter)")
+            print('  - l "labelName": (label filter)')
+            print('  - label add/remove "file name" "labelName"')
             print("  - o: <orderType> order mode (d or default, cd or created date)")
             print("  - clear: (clear filter)")
             print("  - 0: Back")
@@ -424,31 +460,62 @@ def menu_mods_toggle(cfg: Dict):
             low = choice.lower()
             if low == "clear":
                 search_query = ""
+                label_filter = ""
                 continue
             if low.startswith("f ") or low.startswith("find "):
                 search_query = choice.split(" ", 1)[1].strip()
                 page = 1
                 continue
+            if low.startswith("l ") or low.startswith("l:"):
+                label_filter = choice.split(" ", 1)[1].strip().strip('"')
+                page = 1
+                continue
+            if low.startswith("label "):
+                try:
+                    args = shlex.split(choice)
+                except ValueError:
+                    continue
+                if len(args) == 4 and args[1].lower() in ["add", "remove"]:
+                    action = args[1].lower()
+                    file_name = args[2]
+                    label_name = args[3]
+                    labels = load_labels()
+                    if action == "add":
+                        labels[file_name] = label_name
+                        save_labels(labels)
+                    else:
+                        if labels.get(file_name) == label_name:
+                            labels.pop(file_name, None)
+                            save_labels(labels)
+                continue
             # anything else just continue
             continue
-        page, pages = paginate(len(items), page)
-        shown = page_slice(items, page)
+        page, pages = paginate(len(items), page, cfg)
+        shown = page_slice(items, page, cfg)
         print("Mods — install/uninstall (toggle)")
         print("=" * PRINT_SIZE)
         if order_mode == "d":
             print("Order: default ↓")
         else:
             print("Order: created date ↓")
+        if label_filter:
+            print(f"Label: '{label_filter}'")
         if search_query:
             print(f"Filter: '{search_query}'")
         for i, m in enumerate(shown, 1):
             mark = "[X]" if m.installed else "[ ]"
             kind = "DIR" if m.is_dir else "FILE"
-            print(f"{i:2d}) {mark} {m.name} ({kind})")
-        print("\n")
+            prefix = f"{i:2d}) {mark} "
+            print(f"{prefix}{m.name} ({kind})")
+            if label_filter == "":
+                lbl = labels.get(m.name) if labels else None
+                print(f"{' ' * len(prefix)}{lbl if lbl else '-'}\n")
+        print("")
         print_pager(pages, page)
         print("Commands:")
         print("  - f: <text> (search) | clear: (clear search filter)")
+        print('  - l <labelName>: (label filter)')
+        print('  - label <add|remove> (labelName) (fileName)')
         print("  - o: <orderType> order mode (d or default, cd or created date)")
         print("  - numbers (comma-separated): toggle selected")
         print("  - a: Uninstall ALL (current page)")
@@ -461,11 +528,40 @@ def menu_mods_toggle(cfg: Dict):
         low = choice.lower()
         if low == "clear":
             search_query = ""
+            label_filter = ""
             page = 1
             continue
         if low.startswith("f ") or low.startswith("find "):
             search_query = choice.split(" ", 1)[1].strip()
             page = 1
+            continue
+        if low.startswith("l ") or low.startswith("l:"):
+            label_filter = choice.split(" ", 1)[1].strip().strip('"')
+            page = 1
+            continue
+        if low.startswith("label "):
+            try:
+                args = shlex.split(choice)
+            except ValueError:
+                continue
+            if len(args) == 4 and args[1].lower() in ["add", "remove"]:
+                action = args[1].lower()
+                label_name = args[2]
+                file_name = get_mod_file_name(items, page, args[3], cfg)
+                labels = load_labels()
+                if action == "add":
+                    labels[file_name] = label_name
+                    save_labels(labels)
+                    last_operation = f'Label added: {file_name} -> {label_name}'
+                else:
+                    if labels.get(file_name) == label_name:
+                        labels.pop(file_name, None)
+                        save_labels(labels)
+                        last_operation = f'Label removed: {file_name} -> {label_name}'
+                    else:
+                        last_operation = "Label not found."
+            else:
+                last_operation = 'Use: label add/remove "file name" "labelName"'
             continue
         if low.startswith("o "):
             arg = low.split(" ", 1)[1].strip()
@@ -527,7 +623,7 @@ def menu_presets(cfg: Dict):
         keys = list(presets.keys())
         if not keys:
             print("No presets saved.")
-        page, pages = paginate(len(keys) if keys else 1, page)
+        page, pages = paginate(len(keys) if keys else 1, page, cfg)
         page_keys = page_slice(keys, page)
 
         items = discover_mods(cfg)
