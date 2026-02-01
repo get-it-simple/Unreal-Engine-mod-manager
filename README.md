@@ -10,10 +10,13 @@
     - Folders → junctions (`/J`)
 - ⚙️ **Config in JSON**
   - Stored next to the script
+    - labels - separate config for labels to simplify managment with different names
+    - config - script base settings
   - Defines:
     - Game mods directory
     - Mods source directory
     - File types
+    - Page size
 - 🔄 **Mod Operations**
   - Apply / deactivate mods (create/remove links in game dir)
   - Single **mods menu**:
@@ -60,7 +63,54 @@ Mod Manager — Menu
 6) 🛠️ Fix missing mods
 0) 🏠 Exit
 Select [0-6]:
+```
+## Mods menu
+```text
+Mods — install/uninstall (toggle)
+================================================
+Order: default ↓
+ 1) [ ] test - Copy - Copy.pak (FILE)
+        test label 1
+
+ 2) [ ] test - Copy.pak (FILE)
+        -
+
+ 3) [ ] test.pak (FILE)
+        -
 
 
+Commands:
+  - f: <text> (search) | clear: (clear search filter)
+  - l <labelName>: (label filter)
+  - label <add|remove> (labelName) (fileIndex)
+  - o: <orderType> order mode (d or default, cd or created date)
+  - numbers (comma-separated): toggle selected
+  - a: Uninstall ALL (current page)
+  - i: Install ALL (current page)
+  - pN: go to page N   |   0: back
 
+> label add "test label 1" 1
+```
+## Mods menu - filter by label and order by create date
+#### commands:
+- `l test label 1`
+- `o cd`
+```text
+Mods — install/uninstall (toggle)
+================================================
+Order: created date ↓
+Label: 'test label 1'
+ 1) [ ] test - Copy - Copy.pak (FILE)
+
+Commands:
+  - f: <text> (search) | clear: (clear search filter)
+  - l <labelName>: (label filter)
+  - label <add|remove> (labelName) (fileIndex)
+  - o: <orderType> order mode (d or default, cd or created date)
+  - numbers (comma-separated): toggle selected
+  - a: Uninstall ALL (current page)
+  - i: Install ALL (current page)
+  - pN: go to page N   |   0: back
+    Order mode set to: created date
+>
 ```
