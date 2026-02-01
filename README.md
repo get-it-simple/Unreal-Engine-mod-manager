@@ -82,9 +82,9 @@ Order: default ↓
 Commands:
   - f: <text> (search) | clear: (clear search filter)
   - l <labelName>: (label filter)
-  - label <add|remove> (labelName) (fileIndex)
+  - label <add|remove> <labelName> <fileIndex>
   - o: <orderType> order mode (d or default, cd or created date)
-  - numbers (comma-separated): toggle selected
+  - numbers <comma-separated>: toggle selected
   - a: Uninstall ALL (current page)
   - i: Install ALL (current page)
   - pN: go to page N   |   0: back
@@ -105,9 +105,9 @@ Label: 'test label 1'
 Commands:
   - f: <text> (search) | clear: (clear search filter)
   - l <labelName>: (label filter)
-  - label <add|remove> (labelName) (fileIndex)
+  - label <add|remove> <labelName> <fileIndex>
   - o: <orderType> order mode (d or default, cd or created date)
-  - numbers (comma-separated): toggle selected
+  - numbers <comma-separated>: toggle selected
   - a: Uninstall ALL (current page)
   - i: Install ALL (current page)
   - pN: go to page N   |   0: back
