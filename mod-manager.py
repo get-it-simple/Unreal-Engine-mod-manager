@@ -334,7 +334,7 @@ def menu_fix_broken(cfg: Dict):
             print("No broken links detected.")
             return
         page, pages = paginate(len(broken), page, cfg)
-        shown = page_slice(broken, page)
+        shown = page_slice(broken, page, cfg)
         print("Fix broken links — remove game links whose source is missing")
         print("=" * PRINT_SIZE)
         for i, m in enumerate(shown, 1):
@@ -624,7 +624,7 @@ def menu_presets(cfg: Dict):
         if not keys:
             print("No presets saved.")
         page, pages = paginate(len(keys) if keys else 1, page, cfg)
-        page_keys = page_slice(keys, page)
+        page_keys = page_slice(keys, page, cfg)
 
         items = discover_mods(cfg)
         installed_set = {m.name for m in items if m.installed}
