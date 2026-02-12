@@ -17,5 +17,8 @@ DEFAULT_CONFIG = {
     "mods_source_dir": "",
     "game_mods_dir": "",
     "mod_extensions": "",
-    "page_size": 10
+    "page_size": 10,
+    "max_mod_name_len": 28,
+    "max_preset_name_len": 28,
+    "max_label_name_len": 12
 }

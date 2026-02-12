@@ -53,4 +53,3 @@ def get_mod_file_name(items: List[ModItem], page: int, file_name: str, cfg: Dict
         return items[int(file_name) - 1 + (int(cfg.get("page_size", 10)) * (page - 1))].name
     else:
         return file_name
-

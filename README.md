@@ -42,6 +42,12 @@
 
 ---
 
+## ⚙️ Install requirements
+### optional to use autocompletion for commands
+```bash
+pip install -r requirements.txt
+```
+
 ## ▶️ Run
 
 ```bash
@@ -66,51 +72,23 @@ Select [0-6]:
 ```
 ## Mods menu
 ```text
-Mods — install/uninstall (toggle)
+Advanced completion disabled. Install: pip install prompt_toolkit
+
+Page 1/19    Order: d    Filter: -
 ================================================
-Order: default ↓
- 1) [ ] test - Copy - Copy.pak (FILE)
-        test label 1
+ 1.  [X] mod_name_1... - [-]
+ 2.  [ ] mod_name_2... - [-]
+ 3.  [X] mod_name_3    - [label-1]
 
- 2) [ ] test - Copy.pak (FILE)
-        -
-
- 3) [ ] test.pak (FILE)
-        -
-
-
-Commands:
-  - f: <text> (search) | clear: (clear search filter)
-  - l <labelName>: (label filter)
-  - label <add|remove> <labelName> <fileIndex>
-  - o: <orderType> order mode (d or default, cd or created date)
-  - numbers <comma-separated>: toggle selected
-  - a: Uninstall ALL (current page)
-  - i: Install ALL (current page)
-  - pN: go to page N   |   0: back
-
-> label add "test label 1" 1
+Type / for commands
+>
 ```
 ## Mods menu - filter by label and order by create date
-#### commands:
-- `l test label 1`
-- `o cd`
 ```text
-Mods — install/uninstall (toggle)
+Page 1/1    Order: d    Filter: l:label-1 | s:mod_nam
 ================================================
-Order: created date ↓
-Label: 'test label 1'
- 1) [ ] test - Copy - Copy.pak (FILE)
+1.  [X] mod_name_1...  - [label-1]
 
-Commands:
-  - f: <text> (search) | clear: (clear search filter)
-  - l <labelName>: (label filter)
-  - label <add|remove> <labelName> <fileIndex>
-  - o: <orderType> order mode (d or default, cd or created date)
-  - numbers <comma-separated>: toggle selected
-  - a: Uninstall ALL (current page)
-  - i: Install ALL (current page)
-  - pN: go to page N   |   0: back
-    Order mode set to: created date
+Type / for commands
 >
 ```

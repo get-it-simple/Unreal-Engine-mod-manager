@@ -4,10 +4,12 @@ import os
 import platform
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Callable, Dict, List, Tuple
 
 from .models import ModItem
 from .platform_utils import is_windows
+
+_PT_AVAILABLE = False
 
 def prompt(msg: str) -> str:
     try:
@@ -18,6 +20,22 @@ def prompt(msg: str) -> str:
 def pause(msg: str = "Press Enter to continue...") -> None:
     prompt(f"{msg}")
 
+def truncate_text(text: str, max_len: int, suffix: str = "...") -> str:
+    if max_len <= 0:
+        return ""
+    if text is None:
+        return ""
+    s = str(text)
+    if len(s) <= max_len:
+        return s
+    if max_len <= len(suffix):
+        return s[:max_len]
+    return s[: max_len - len(suffix)] + suffix
+
+def format_order_short(order_mode: str) -> str:
+    if order_mode in ["cd", "created date"]:
+        return "cd"
+    return "d"
 
 def ensure_paths(cfg: Dict) -> bool:
     gs = cfg.get("game_mods_dir")
@@ -86,13 +104,77 @@ def filter_items_by_query(items: List[ModItem], query: str) -> List[ModItem]:
     return [m for m in items if q in m.name.lower()]
 
 def sort_items(items: List[ModItem], order_mode: str) -> List[ModItem]:
-    # Supports short and full names:
-    # 'd' or 'default' -> default order (files grouped & name asc)
-    # 'cd' or 'created date' -> by creation time (ctime)
     if order_mode in ["cd", "created date"]:
         try:
             return sorted(items, key=lambda m: m.src.stat().st_ctime, reverse=True)
         except Exception:
-            # Fallback to default order if stat not available
             pass
     return sorted(items, key=lambda m: ((not m.is_dir), m.name.lower()))
+
+def _try_prompt_toolkit():
+    global _PT_AVAILABLE
+    try:
+        from prompt_toolkit import prompt as pt_prompt
+        from prompt_toolkit.formatted_text import FormattedText
+        _PT_AVAILABLE = True
+        return pt_prompt, FormattedText
+    except Exception:
+        _PT_AVAILABLE = False
+        return None, None
+
+class _CmdCompleter:
+    def __init__(self, get_cmds: Callable[[], List[str]]):
+        self.get_cmds = get_cmds
+
+    def get_completions(self, document, complete_event):
+        text = document.text or ""
+        if not text.startswith("/"):
+            return
+        from prompt_toolkit.completion import Completion
+        base = text.lower()
+        cmds = self.get_cmds() or []
+        for c in cmds:
+            if c.lower().startswith(base):
+                yield Completion(c, start_position=-len(text), display=c)
+        yield Completion("", start_position=0, display="(keep typing)")
+
+    async def get_completions_async(self, document, complete_event):
+        for c in self.get_completions(document, complete_event):
+            yield c
+
+def smart_prompt(
+    msg: str,
+    get_commands: Callable[[], List[str]] | None = None,
+    placeholder: str = "Type / for commands",
+) -> str:
+    pt_prompt, FormattedText = _try_prompt_toolkit()
+
+    if not pt_prompt or not get_commands:
+        text = prompt(msg)
+        if text.strip() == "/" and get_commands:
+            print("\nAvailable commands:")
+            for c in get_commands():
+                print(" ", c)
+            prompt("\nPress Enter to continue...")
+            return ""
+        return text
+
+    completer = _CmdCompleter(get_commands)
+
+    def bottom_toolbar():
+        try:
+            from prompt_toolkit.application.current import get_app
+            buf = get_app().current_buffer
+            return FormattedText([("", placeholder)]) if not (buf.text or "") else ""
+        except Exception:
+            return ""
+
+    try:
+        return pt_prompt(
+            msg,
+            completer=completer,
+            complete_while_typing=True,
+            bottom_toolbar=bottom_toolbar,
+        )
+    except (EOFError, KeyboardInterrupt):
+        return ""
