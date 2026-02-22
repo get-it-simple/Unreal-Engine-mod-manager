@@ -4,7 +4,8 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 from .models import ModItem
-from .links import mklink, unlink_path
+from .links import mklink, mklink_batch, unlink_path
+from .platform_utils import is_windows
 
 def parse_extensions(cfg: Dict) -> Tuple[bool, List[str]]:
     exts_raw = (cfg.get("mod_extensions") or "").strip()
@@ -44,6 +45,13 @@ def list_broken_links(cfg: Dict) -> List[ModItem]:
 
 def apply_mod(mod: ModItem) -> Tuple[bool, str]:
     return mklink(mod.src, mod.dest)
+
+def apply_mods_batch(mods: List[ModItem]) -> List[Tuple[bool, str]]:
+    if not mods:
+        return []
+    if not is_windows():
+        return [apply_mod(m) for m in mods]
+    return mklink_batch([(m.src, m.dest, m.is_dir) for m in mods])
 
 def deactivate_mod(mod: ModItem) -> Tuple[bool, str]:
     return unlink_path(mod.dest)

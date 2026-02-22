@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Tuple
 
-from .mods import discover_mods, list_installed_mods, apply_mod, deactivate_mod
+from .mods import discover_mods, list_installed_mods, apply_mods_batch, deactivate_mod
 from .storage import load_presets, save_presets
 
 def save_preset_from_installed(cfg: Dict, name: str) -> Tuple[bool, str]:
@@ -57,7 +57,9 @@ def apply_preset(cfg: Dict, name: str) -> Tuple[int, int, List[str]]:
 
     for idx, mod in enumerate(work, start=1):
         print(f"[{idx}/{total}] Installing {mod.name} ...")
-        success, msg = apply_mod(mod)
+
+    results = apply_mods_batch(work)
+    for mod, (success, msg) in zip(work, results):
         if success:
             ok += 1
         else:
@@ -85,3 +87,4 @@ def deactivate_preset(cfg: Dict, name: str) -> Tuple[int, int, List[str]]:
             fail += 1
         msgs.append(f"{nm}: {'OK' if success else 'ERR'} ({msg})")
     return ok, fail, msgs
+    

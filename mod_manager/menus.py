@@ -9,7 +9,7 @@ from app_paths import PRINT_SIZE
 
 from .platform_utils import is_windows
 from .storage import load_config, save_config, load_labels, save_labels, load_presets
-from .mods import discover_mods, list_broken_links, deactivate_mod, apply_mod
+from .mods import discover_mods, list_broken_links, deactivate_mod, apply_mod, apply_mods_batch
 from .presets import save_preset_from_installed, delete_presets_by_names, deactivate_preset, apply_preset
 from .cli_utils import (
     prompt,
@@ -365,7 +365,8 @@ def menu_mods_toggle(cfg: Dict):
                     err = 0
                     for idx, m in enumerate(to_install, start=1):
                         print(f"[{idx}/{total}] Installing {m.name} ...")
-                        ok, msg = apply_mod(m)
+                    results = apply_mods_batch(to_install)
+                    for m, (ok, msg) in zip(to_install, results):
                         if not ok:
                             err += 1
                             print(f"  ERR — {msg}")
@@ -451,7 +452,8 @@ def menu_mods_toggle(cfg: Dict):
             err = 0
             for idx, m in enumerate(to_install, start=1):
                 print(f"[{idx}/{total}] Installing {m.name} ...")
-                ok, msg = apply_mod(m)
+            results = apply_mods_batch(to_install)
+            for m, (ok, msg) in zip(to_install, results):
                 if not ok:
                     err += 1
                     print(f"  ERR — {msg}")
@@ -515,6 +517,7 @@ def menu_presets(cfg: Dict):
             print("Type / for commands")
             continue
 
+        parsed = _parse_slash(choice)
         parsed = _parse_slash(choice)
         if parsed:
             cmd, args = parsed
