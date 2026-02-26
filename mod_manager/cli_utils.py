@@ -8,6 +8,7 @@ from typing import Callable, Dict, List, Tuple
 
 from .models import ModItem
 from .platform_utils import is_windows
+from .storage import load_labels
 
 _PT_AVAILABLE = False
 
@@ -111,6 +112,28 @@ def sort_items(items: List[ModItem], order_mode: str) -> List[ModItem]:
             pass
     return sorted(items, key=lambda m: ((not m.is_dir), m.name.lower()))
 
+def _normalize_label(s: str) -> str:
+    s = (s or "").strip().lower().replace("_", " ")
+    s = " ".join(s.split())
+    return s
+
+def _labels_for_completion() -> List[str]:
+    try:
+        data = load_labels() or {}
+    except Exception:
+        data = {}
+    seen = set()
+    out: List[str] = []
+    for _k, v in data.items():
+        if not v:
+            continue
+        disp = " ".join(str(v).replace("_", " ").split())
+        key = _normalize_label(disp)
+        if key and key not in seen:
+            seen.add(key)
+            out.append(disp)
+    return out
+
 def _try_prompt_toolkit():
     global _PT_AVAILABLE
     try:
@@ -130,12 +153,34 @@ class _CmdCompleter:
         text = document.text or ""
         if not text.startswith("/"):
             return
+
         from prompt_toolkit.completion import Completion
+
         base = text.lower()
         cmds = self.get_cmds() or []
+
         for c in cmds:
             if c.lower().startswith(base):
                 yield Completion(c, start_position=-len(text), display=c)
+
+        prefix = ""
+        if base.startswith("/l+ "):
+            prefix = "/l+ "
+        elif base.startswith("/l- "):
+            prefix = "/l- "
+        elif base.startswith("/l "):
+            prefix = "/l "
+
+        if prefix:
+            rest = text[len(prefix):]
+            frag = rest.strip()
+            if frag.startswith('"') or frag.startswith("'"):
+                frag = frag[1:]
+            nf = _normalize_label(frag)
+            for lbl in _labels_for_completion():
+                if not nf or _normalize_label(lbl).startswith(nf):
+                    yield Completion(f'"{lbl}" ', start_position=-len(rest), display=lbl)
+
         yield Completion("", start_position=0, display="(keep typing)")
 
     async def get_completions_async(self, document, complete_event):

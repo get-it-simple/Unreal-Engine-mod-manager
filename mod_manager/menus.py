@@ -110,8 +110,8 @@ def _print_mods_help():
     print('use "text 1" for text with spaces')
     print("/search <text>         Search mods by name (empty = clear)")
     print('/l <label>             Filter by label (empty = clear)')
-    print("/l+ <label> <index>    Add label to item on current page")
-    print("/l- <label> <index>    Remove label from item on current page (if matches)")
+    print("/l+ <label> <indexes>  Add label to items on current page")
+    print("/l- <label> <indexes>  Remove label from items on current page (if matches)")
     print("/order default         Sort by default")
     print("/order created date    Sort by created date")
     print("/toggle 1,3,5          Toggle indexes (install/uninstall)")
@@ -124,7 +124,9 @@ def _print_mods_help():
     print("/search ui")
     print("/l label_1")
     print("/l+ label_1 3")
+    print("/l+ label_1 1,2,3,4,5,11")
     print("/l- label_1 3")
+    print("/l- label_1 1,2,3,4,5,11")
     print("/toggle 1,3,5")
     print("/install 2")
     print("/uninstall")
@@ -313,25 +315,36 @@ def menu_mods_toggle(cfg: Dict):
             if cmd in ["l+", "l-"]:
                 if len(args) >= 2:
                     label_name = args[0]
-                    idx = args[1]
-                    file_name = _shown_name(shown, idx) if items else None
-                    if not file_name:
+                    idxs = parse_multi_choice(" ".join(args[1:]))
+                    if not idxs:
+                        last_operation = "Invalid index."
+                        continue
+                    targets = []
+                    for num in idxs:
+                        if 1 <= num <= len(shown):
+                            targets.append(shown[num - 1].name)
+                    if not targets:
                         last_operation = "Invalid index."
                         continue
                     labels = load_labels()
                     if cmd == "l+":
-                        labels[file_name] = label_name
+                        for file_name in targets:
+                            labels[file_name] = label_name
                         save_labels(labels)
-                        last_operation = f"Label added: {file_name} -> {label_name}"
+                        last_operation = f"Label added: {label_name} -> {', '.join(targets)}"
                     else:
-                        if labels.get(file_name) == label_name:
-                            labels.pop(file_name, None)
+                        removed = []
+                        for file_name in targets:
+                            if labels.get(file_name) == label_name:
+                                labels.pop(file_name, None)
+                                removed.append(file_name)
+                        if removed:
                             save_labels(labels)
-                            last_operation = f"Label removed: {file_name} -> {label_name}"
+                            last_operation = f"Label removed: {label_name} -> {', '.join(removed)}"
                         else:
                             last_operation = "Label not found."
                 else:
-                    last_operation = "Use: /l+ <label> <index> or /l- <label> <index>"
+                    last_operation = "Use: /l+ <label> <indexes> or /l- <label> <indexes>"
                 continue
             if cmd in ["order"]:
                 mode = " ".join(args).strip().lower()
