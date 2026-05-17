@@ -233,6 +233,8 @@ def build_parser() -> argparse.ArgumentParser:
     broken_remove.add_argument("indexes", nargs="?", type=_indexes, default=[])
     broken_remove.add_argument("--all", action="store_true")
 
+    sub.add_parser("gui")
+
     return parser
 
 def run_cli(argv: List[str] | None = None) -> int:
@@ -249,5 +251,8 @@ def run_cli(argv: List[str] | None = None) -> int:
         return _run_open(args, cfg)
     if args.cmd == "broken":
         return _run_broken(args, cfg)
+    if args.cmd == "gui":
+        from .gui import run_gui
+        return run_gui()
     parser.print_help()
     return 0

@@ -2,9 +2,15 @@
 # -*- coding: utf-8 -*-
 
 from __future__ import annotations
+import sys
 from pathlib import Path
 
-APP_DIR = Path(__file__).resolve().parent
+if getattr(sys, "frozen", False):
+    APP_DIR = Path(sys.executable).resolve().parent
+elif Path(sys.argv[0]).suffix.lower() == ".pyz":
+    APP_DIR = Path(sys.argv[0]).resolve().parent
+else:
+    APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "config.json"
 PRESETS_PATH = APP_DIR / "presets.json"
 LABELS_PATH = APP_DIR / "labels.json"
