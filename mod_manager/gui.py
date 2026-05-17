@@ -12,13 +12,19 @@ from .mods import (
     apply_mods_page,
     deactivate_mod,
     deactivate_mods_page,
+    import_mod_file,
+    import_mod_image,
+    is_image_file,
+    is_mod_file,
     list_broken_links,
+    mod_image_path,
     mods_view,
     mods_records,
     remove_label_from_mods,
     toggle_mods_by_indexes,
 )
 from .presets import delete_presets_by_indexes, presets_records, presets_view, save_preset_from_installed, toggle_presets_by_indexes
+from .dragdrop import WindowsDropTarget
 from .storage import load_config, save_config
 
 class AutocompleteCombobox(ttk.Combobox):
@@ -87,6 +93,7 @@ class ModManagerGui(tk.Tk):
         self.current_mods_shown = []
         self.current_mod_labels = {}
         self.current_broken = []
+        self.drop_target = None
         self.busy = False
         self.action_widgets = []
         self.mod_sort_key = "d"
@@ -229,6 +236,7 @@ class ModManagerGui(tk.Tk):
         self.mods_tree.column("last", width=160)
         self.mods_tree.bind("<ButtonRelease-1>", self._save_placeholder_width)
         self.mods_tree.pack(fill="both", expand=True, pady=8)
+        self.drop_target = WindowsDropTarget(self.mods_tree, self._handle_mods_drop)
         actions = WrapFrame(self.mods_tab)
         actions.pack(fill="x")
         actions.add(self._button(actions, "Prev Page", lambda: self._change_mod_page(-1)))
@@ -363,12 +371,69 @@ class ModManagerGui(tk.Tk):
     def _placeholder(self, name: str) -> tk.PhotoImage:
         if name in self.placeholder_images:
             return self.placeholder_images[name]
-        img = tk.PhotoImage(width=40, height=28)
-        colors = ["#d9e8fb", "#e4f4de", "#f7e6d0", "#eadff7", "#f7dfe8"]
-        color = colors[sum(ord(c) for c in name) % len(colors)]
-        img.put(color, to=(0, 0, 40, 28))
+        path = mod_image_path(self.cfg, name)
+        img = None
+        if path:
+            try:
+                img = tk.PhotoImage(file=str(path))
+                factor = max(1, (max(img.width(), 1) + 39) // 40, (max(img.height(), 1) + 27) // 28)
+                if factor > 1:
+                    img = img.subsample(factor, factor)
+            except tk.TclError:
+                img = None
+        if img is None:
+            img = tk.PhotoImage(width=40, height=28)
+            colors = ["#d9e8fb", "#e4f4de", "#f7e6d0", "#eadff7", "#f7dfe8"]
+            color = colors[sum(ord(c) for c in name) % len(colors)]
+            img.put(color, to=(0, 0, 40, 28))
         self.placeholder_images[name] = img
         return img
+
+    def _handle_mods_drop(self, paths, x: int, y: int) -> None:
+        if self.busy or not ensure_paths(self.cfg):
+            return
+        image_paths = [p for p in paths if is_image_file(p)]
+        mod_paths = [p for p in paths if is_mod_file(p, self.cfg)]
+        tasks = []
+        row = self.mods_tree.identify_row(y)
+        if image_paths:
+            if not row or not row.isdigit():
+                messagebox.showwarning("Image", "Drop image on a mod row.")
+            else:
+                index = int(row)
+                if 1 <= index <= len(self.current_mods_shown):
+                    mod_name = self.current_mods_shown[index - 1].name
+                    for path in image_paths:
+                        tasks.append(("image", path, mod_name, True))
+        for path in mod_paths:
+            dst_exists = ((self.cfg.get("mods_source_dir") or "") and (self.current_mod_items is not None) and any(m.name == path.name for m in self.current_mod_items))
+            replace = True
+            if dst_exists:
+                replace = messagebox.askyesno("Replace mod", f"Replace existing mod '{path.name}'?")
+            if replace:
+                tasks.append(("mod", path, "", dst_exists))
+        if not tasks:
+            self.status_var.set("No supported dropped files.")
+            return
+
+        def worker():
+            imported = []
+            skipped = []
+            for kind, path, mod_name, replace in tasks:
+                if kind == "image":
+                    ok, msg = import_mod_image(self.cfg, mod_name, path)
+                else:
+                    ok, msg = import_mod_file(self.cfg, path, replace)
+                (imported if ok else skipped).append(msg)
+            return imported, skipped
+
+        def done(result) -> None:
+            imported, skipped = result
+            self.placeholder_images.clear()
+            self.status_var.set(f"Imported: {len(imported)}. Skipped: {len(skipped)}.")
+            self.refresh_mods()
+
+        self._run_action("Importing dropped files", worker, done)
 
     def refresh_all(self) -> None:
         self.refresh_mods()

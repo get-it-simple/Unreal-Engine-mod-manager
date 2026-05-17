@@ -5,3 +5,5 @@ labels.json
 __pycache__/*
 mod_manager/__pycache__/*
 dist
+build
+mod-manager-gui.spec

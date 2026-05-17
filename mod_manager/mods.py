@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -9,12 +10,23 @@ from .platform_utils import is_windows
 from .storage import load_labels, save_labels, mark_mods_managed, load_mod_records, ensure_mod_records
 from .cli_utils import filter_items_by_query, page_slice, paginate, sort_items
 
+IMAGE_EXTENSIONS = {".png", ".gif", ".jpg", ".jpeg", ".bmp", ".webp", ".ppm", ".pgm"}
+
 def parse_extensions(cfg: Dict) -> Tuple[bool, List[str]]:
     exts_raw = (cfg.get("mod_extensions") or "").strip()
     if not exts_raw:
         return True, []
     exts = [e.lower().strip() if e.startswith(".") else "." + e.lower().strip() for e in exts_raw.split(",") if e.strip()]
     return False, exts
+
+def is_mod_file(path: Path, cfg: Dict) -> bool:
+    if not path.is_file() or is_image_file(path):
+        return False
+    show_all, exts = parse_extensions(cfg)
+    return show_all or path.suffix.lower() in exts
+
+def is_image_file(path: Path) -> bool:
+    return path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
 
 def discover_mods(cfg: Dict) -> List[ModItem]:
     src_dir = Path(cfg.get("mods_source_dir") or "").expanduser()
@@ -32,6 +44,8 @@ def discover_mods(cfg: Dict) -> List[ModItem]:
                 installed = dest.exists() or dest.is_symlink()
                 items.append(ModItem(name=p.name, src=p, dest=dest, is_dir=False, installed=installed))
         elif p.is_dir():
+            if p.name == "images":
+                continue
             dest = dst_dir / p.name
             installed = dest.exists() or dest.is_symlink()
             items.append(ModItem(name=p.name, src=p, dest=dest, is_dir=True, installed=installed))
@@ -47,6 +61,36 @@ def list_broken_links(cfg: Dict) -> List[ModItem]:
 
 def apply_mod(mod: ModItem) -> Tuple[bool, str]:
     return mklink(mod.src, mod.dest)
+
+def import_mod_file(cfg: Dict, src: Path, replace: bool = False) -> Tuple[bool, str]:
+    dst_dir = Path(cfg.get("mods_source_dir") or "").expanduser()
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    dst = dst_dir / src.name
+    if dst.exists() and not replace:
+        return False, "exists"
+    if src.resolve() == dst.resolve():
+        ensure_mod_records([dst.name])
+        return True, dst.name
+    shutil.copy2(src, dst)
+    ensure_mod_records([dst.name])
+    return True, dst.name
+
+def mod_image_path(cfg: Dict, mod_name: str) -> Path | None:
+    images_dir = Path(cfg.get("mods_source_dir") or "").expanduser() / "images"
+    for ext in [".png", ".gif", ".ppm", ".pgm"]:
+        candidate = images_dir / f"{mod_name}{ext}"
+        if candidate.exists():
+            return candidate
+    return None
+
+def import_mod_image(cfg: Dict, mod_name: str, src: Path) -> Tuple[bool, str]:
+    images_dir = Path(cfg.get("mods_source_dir") or "").expanduser() / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+    dst = images_dir / f"{mod_name}{src.suffix.lower()}"
+    if src.resolve() == dst.resolve():
+        return True, dst.name
+    shutil.copy2(src, dst)
+    return True, dst.name
 
 def apply_mods_batch(mods: List[ModItem]) -> List[Tuple[bool, str]]:
     if not mods:
