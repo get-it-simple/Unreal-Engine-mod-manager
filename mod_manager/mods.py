@@ -6,7 +6,7 @@ from typing import Dict, List, Tuple
 from .models import ModItem
 from .links import mklink, mklink_batch, unlink_path
 from .platform_utils import is_windows
-from .storage import load_labels, save_labels
+from .storage import load_labels, save_labels, mark_mods_managed, load_mod_records, ensure_mod_records
 from .cli_utils import filter_items_by_query, page_slice, paginate, sort_items
 
 def parse_extensions(cfg: Dict) -> Tuple[bool, List[str]]:
@@ -60,12 +60,25 @@ def deactivate_mod(mod: ModItem) -> Tuple[bool, str]:
 
 def mods_view(cfg: Dict, page: int, label_filter: str, search_query: str, order_mode: str) -> Tuple[List[ModItem], List[ModItem], int, int, Dict]:
     items_all = discover_mods(cfg)
+    ensure_mod_records([m.name for m in items_all])
     items = filter_items_by_query(items_all, search_query)
     labels = load_labels()
+    records = load_mod_records()
     if label_filter:
         lf = label_filter.lower()
         items = [m for m in items if (labels.get(m.name) or "").lower() == lf]
-    items = sort_items(items, order_mode)
+    reverse = order_mode.startswith("-")
+    mode = order_mode[1:] if reverse else order_mode
+    if mode == "name":
+        items = sorted(items, key=lambda m: m.name.lower(), reverse=reverse)
+    elif mode == "installed":
+        items = sorted(items, key=lambda m: (m.installed, m.name.lower()), reverse=reverse)
+    elif mode == "label":
+        items = sorted(items, key=lambda m: ((labels.get(m.name) or "").lower(), m.name.lower()), reverse=reverse)
+    elif mode == "last_managed":
+        items = sorted(items, key=lambda m: (records.get(m.name, {}).get("last_managed") or "", m.name.lower()), reverse=reverse)
+    else:
+        items = sort_items(items, order_mode)
     page, pages = paginate(len(items) if items else 1, page, cfg)
     shown = page_slice(items, page, cfg) if items else []
     return items, shown, page, pages, labels
@@ -75,6 +88,7 @@ def add_label_to_mods(label_name: str, targets: List[str]) -> str:
     for file_name in targets:
         labels[file_name] = label_name
     save_labels(labels)
+    mark_mods_managed(targets, "label")
     return f"Label added: {label_name} -> {', '.join(targets)}"
 
 def remove_label_from_mods(label_name: str, targets: List[str]) -> str:
@@ -86,16 +100,22 @@ def remove_label_from_mods(label_name: str, targets: List[str]) -> str:
             removed.append(file_name)
     if removed:
         save_labels(labels)
+        mark_mods_managed(removed, "label")
         return f"Label removed: {label_name} -> {', '.join(removed)}"
     return "Label not found."
 
 def deactivate_mods_page(cfg: Dict, page: int, label_filter: str, search_query: str, order_mode: str) -> Tuple[int, int]:
     _items, shown, target_page, _pages, _labels = mods_view(cfg, page, label_filter, search_query, order_mode)
     count = 0
+    removed_names = []
     for m in shown:
         if m.installed:
-            deactivate_mod(m)
-            count += 1
+            ok, _msg = deactivate_mod(m)
+            if ok:
+                count += 1
+                removed_names.append(m.name)
+    if count:
+        mark_mods_managed(removed_names, "uninstalled")
     return target_page, count
 
 def apply_mods_page(cfg: Dict, page: int, label_filter: str, search_query: str, order_mode: str) -> Tuple[int, int, int]:
@@ -106,14 +126,20 @@ def apply_mods_page(cfg: Dict, page: int, label_filter: str, search_query: str, 
     for idx, m in enumerate(to_install, start=1):
         print(f"[{idx}/{total}] Installing {m.name} ...")
     results = apply_mods_batch(to_install)
+    installed_names = []
     for _m, (ok, msg) in zip(to_install, results):
         if not ok:
             err += 1
             print(f"  ERR — {msg}")
+        else:
+            installed_names.append(_m.name)
+    if installed_names:
+        mark_mods_managed(installed_names, "installed")
     return target_page, total, err
 
 def toggle_mods_by_indexes(shown: List[ModItem], indexes: List[int]) -> str:
     to_install: List[ModItem] = []
+    uninstalled_names = []
     uninstalled = 0
     uninstall_errors = 0
     for num in indexes:
@@ -123,6 +149,7 @@ def toggle_mods_by_indexes(shown: List[ModItem], indexes: List[int]) -> str:
                 ok, msg = deactivate_mod(m)
                 if ok:
                     uninstalled += 1
+                    uninstalled_names.append(m.name)
                 else:
                     uninstall_errors += 1
             else:
@@ -131,6 +158,9 @@ def toggle_mods_by_indexes(shown: List[ModItem], indexes: List[int]) -> str:
     if to_install:
         results = apply_mods_batch(to_install)
         install_errors = sum(1 for ok, _msg in results if not ok)
+        mark_mods_managed([m.name for m, (ok, _msg) in zip(to_install, results) if ok], "installed")
+    if uninstalled_names:
+        mark_mods_managed(uninstalled_names, "uninstalled")
     installed = len(to_install) - install_errors
     parts = []
     if to_install:
@@ -138,6 +168,9 @@ def toggle_mods_by_indexes(shown: List[ModItem], indexes: List[int]) -> str:
     if uninstalled or uninstall_errors:
         parts.append(f"Uninstalled {uninstalled}. Errors: {uninstall_errors}.")
     return " ".join(parts)
+
+def mods_records() -> Dict[str, Dict]:
+    return load_mod_records()
 
 def get_mod_file_name(items: List[ModItem], page: int, file_name: str, cfg: Dict) -> str:
     if file_name.isdigit() and int(file_name) > 0 and int(file_name) < int(cfg.get("page_size", 10)) + 1:

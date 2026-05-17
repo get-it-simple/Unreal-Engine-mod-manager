@@ -13,10 +13,11 @@ from .mods import (
     deactivate_mods_page,
     list_broken_links,
     mods_view,
+    mods_records,
     remove_label_from_mods,
     toggle_mods_by_indexes,
 )
-from .presets import delete_presets_by_indexes, presets_view, save_preset_from_installed, toggle_presets_by_indexes
+from .presets import delete_presets_by_indexes, presets_records, presets_view, save_preset_from_installed, toggle_presets_by_indexes
 from .storage import load_config, save_config
 
 class AutocompleteCombobox(ttk.Combobox):
@@ -56,6 +57,10 @@ class ModManagerGui(tk.Tk):
         self.current_broken = []
         self.busy = False
         self.action_widgets = []
+        self.mod_sort_key = "d"
+        self.mod_sort_reverse = False
+        self.preset_sort_key = "name"
+        self.preset_sort_reverse = False
         self._build()
         self.refresh_all()
 
@@ -137,13 +142,15 @@ class ModManagerGui(tk.Tk):
         self._button(top, "List", self.refresh_mods).pack(side="left")
         self._button(top, "Search", self._mods_search).pack(side="left", padx=(6, 0))
         self._button(top, "Clear", self._mods_clear).pack(side="left", padx=(6, 0))
-        self.mods_tree = ttk.Treeview(self.mods_tab, columns=("state", "label"), show="tree headings", selectmode="extended")
-        self.mods_tree.heading("#0", text="Mod")
-        self.mods_tree.heading("state", text="Installed")
-        self.mods_tree.heading("label", text="Label")
-        self.mods_tree.column("#0", width=560)
+        self.mods_tree = ttk.Treeview(self.mods_tab, columns=("state", "label", "last"), show="tree headings", selectmode="extended")
+        self.mods_tree.heading("#0", text="Mod", command=lambda: self._sort_mods("name"))
+        self.mods_tree.heading("state", text="Installed", command=lambda: self._sort_mods("installed"))
+        self.mods_tree.heading("label", text="Label", command=lambda: self._sort_mods("label"))
+        self.mods_tree.heading("last", text="Last managed", command=lambda: self._sort_mods("last_managed"))
+        self.mods_tree.column("#0", width=430)
         self.mods_tree.column("state", width=90, anchor="center")
-        self.mods_tree.column("label", width=180)
+        self.mods_tree.column("label", width=160)
+        self.mods_tree.column("last", width=160)
         self.mods_tree.pack(fill="both", expand=True, pady=8)
         actions = ttk.Frame(self.mods_tab)
         actions.pack(fill="x")
@@ -170,13 +177,15 @@ class ModManagerGui(tk.Tk):
         self.preset_name_box.pack(side="left", padx=(6, 8))
         self._button(top, "Save", self._save_preset).pack(side="left")
         self._button(top, "Refresh", self.refresh_presets).pack(side="left", padx=(6, 0))
-        self.presets_tree = ttk.Treeview(self.presets_tab, columns=("state", "mods"), show="tree headings", selectmode="extended")
-        self.presets_tree.heading("#0", text="Preset")
-        self.presets_tree.heading("state", text="Applied")
-        self.presets_tree.heading("mods", text="Mods")
-        self.presets_tree.column("#0", width=620)
+        self.presets_tree = ttk.Treeview(self.presets_tab, columns=("state", "mods", "last"), show="tree headings", selectmode="extended")
+        self.presets_tree.heading("#0", text="Preset", command=lambda: self._sort_presets("name"))
+        self.presets_tree.heading("state", text="State", command=lambda: self._sort_presets("state"))
+        self.presets_tree.heading("mods", text="Mods", command=lambda: self._sort_presets("mods"))
+        self.presets_tree.heading("last", text="Last managed", command=lambda: self._sort_presets("last_managed"))
+        self.presets_tree.column("#0", width=460)
         self.presets_tree.column("state", width=90, anchor="center")
         self.presets_tree.column("mods", width=90, anchor="center")
+        self.presets_tree.column("last", width=170)
         self.presets_tree.pack(fill="both", expand=True, pady=8)
         actions = ttk.Frame(self.presets_tab)
         actions.pack(fill="x")
@@ -230,7 +239,33 @@ class ModManagerGui(tk.Tk):
         self.broken_tree.pack(fill="both", expand=True, pady=8)
 
     def _view_args(self):
-        return max(1, int(self.mod_page.get() or 1)), self.label_filter_var.get().strip(), self.search_var.get().strip(), self.order_var.get().strip() or "d"
+        return max(1, int(self.mod_page.get() or 1)), self.label_filter_var.get().strip(), self.search_var.get().strip(), self._mod_order_mode()
+
+    def _mod_order_mode(self) -> str:
+        if self.mod_sort_key == "d":
+            return self.order_var.get().strip() or "d"
+        return f"-{self.mod_sort_key}" if self.mod_sort_reverse else self.mod_sort_key
+
+    def _preset_order_mode(self) -> str:
+        return f"-{self.preset_sort_key}" if self.preset_sort_reverse else self.preset_sort_key
+
+    def _sort_mods(self, key: str) -> None:
+        if self.mod_sort_key == key:
+            self.mod_sort_reverse = not self.mod_sort_reverse
+        else:
+            self.mod_sort_key = key
+            self.mod_sort_reverse = False
+        self.mod_page.set(1)
+        self.refresh_mods()
+
+    def _sort_presets(self, key: str) -> None:
+        if self.preset_sort_key == key:
+            self.preset_sort_reverse = not self.preset_sort_reverse
+        else:
+            self.preset_sort_key = key
+            self.preset_sort_reverse = False
+        self.preset_page.set(1)
+        self.refresh_presets()
 
     def _placeholder(self, name: str) -> tk.PhotoImage:
         if name in self.placeholder_images:
@@ -253,6 +288,7 @@ class ModManagerGui(tk.Tk):
             return
         page, label, search, order = self._view_args()
         items, shown, page, pages, labels = mods_view(self.cfg, page, label, search, order)
+        records = mods_records()
         self.current_mod_items = items
         self.current_mods_shown = shown
         self.current_mod_labels = labels
@@ -260,7 +296,9 @@ class ModManagerGui(tk.Tk):
         self.mods_tree.delete(*self.mods_tree.get_children())
         for i, mod in enumerate(shown, 1):
             mark = "Yes" if mod.installed else "No"
-            self.mods_tree.insert("", "end", iid=str(i), text=mod.name, image=self._placeholder(mod.name), values=(mark, labels.get(mod.name, "-")))
+            rec = records.get(mod.name, {})
+            last_managed = rec.get("last_managed") or "-"
+            self.mods_tree.insert("", "end", iid=str(i), text=mod.name, image=self._placeholder(mod.name), values=(mark, labels.get(mod.name, "-"), last_managed))
         if selected_names:
             selected = [str(i) for i, mod in enumerate(shown, 1) if mod.name in selected_names]
             if selected:
@@ -276,17 +314,16 @@ class ModManagerGui(tk.Tk):
     def refresh_presets(self) -> None:
         if not ensure_paths(self.cfg):
             return
-        presets, keys, page_keys, page, pages = presets_view(self.cfg, max(1, int(self.preset_page.get() or 1)))
-        if not self.search_var.get().strip() and not self.label_filter_var.get().strip() and self.current_mod_items:
-            installed = {m.name for m in self.current_mod_items if m.installed}
-        else:
-            installed = {m.name for m in mods_view(self.cfg, 1, "", "", "d")[0] if m.installed}
+        presets, keys, page_keys, page, pages = presets_view(self.cfg, max(1, int(self.preset_page.get() or 1)), self._preset_order_mode())
+        records = presets_records()
         self.preset_page.set(page)
         self.presets_tree.delete(*self.presets_tree.get_children())
         for i, name in enumerate(page_keys, 1):
             mods = presets.get(name, [])
-            mark = "Yes" if bool(mods) and all(nm in installed for nm in mods) else "No"
-            self.presets_tree.insert("", "end", iid=str(i), text=name, values=(mark, len(mods)))
+            rec = records.get(name, {})
+            state = rec.get("state") or "undefined"
+            last_managed = rec.get("last_managed") or "-"
+            self.presets_tree.insert("", "end", iid=str(i), text=name, values=(state, len(mods), last_managed))
         self.preset_name_box.set_completion_values(keys)
         self.status_var.set(f"Presets page {page}/{pages}. Items: {len(keys)}")
 

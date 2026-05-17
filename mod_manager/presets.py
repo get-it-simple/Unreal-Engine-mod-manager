@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Dict, List, Tuple
 
 from .mods import discover_mods, list_installed_mods, apply_mods_batch, deactivate_mod
-from .storage import load_presets, save_presets
+from .storage import load_presets, save_presets, load_preset_records, mark_preset_managed
 from .cli_utils import page_slice, paginate
 
 def save_preset_from_installed(cfg: Dict, name: str) -> Tuple[bool, str]:
@@ -13,6 +13,7 @@ def save_preset_from_installed(cfg: Dict, name: str) -> Tuple[bool, str]:
         return False, "No installed mods to save"
     presets[name] = [m.name for m in installed]
     save_presets(presets)
+    mark_preset_managed(name, "saved")
     return True, f"Preset '{name}' saved ({len(installed)} mods)"
 
 def delete_presets_by_names(names: List[str]) -> Tuple[int, List[str]]:
@@ -28,12 +29,26 @@ def delete_presets_by_names(names: List[str]) -> Tuple[int, List[str]]:
     save_presets(presets)
     return removed, missing
 
-def presets_view(cfg: Dict, page: int) -> Tuple[Dict, List[str], List[str], int, int]:
+def presets_view(cfg: Dict, page: int, order_mode: str = "d") -> Tuple[Dict, List[str], List[str], int, int]:
     presets = load_presets()
+    records = load_preset_records()
     keys = list(presets.keys())
+    reverse = order_mode.startswith("-")
+    mode = order_mode[1:] if reverse else order_mode
+    if mode == "name":
+        keys = sorted(keys, key=lambda k: k.lower(), reverse=reverse)
+    elif mode == "mods":
+        keys = sorted(keys, key=lambda k: (len(presets.get(k, [])), k.lower()), reverse=reverse)
+    elif mode == "last_managed":
+        keys = sorted(keys, key=lambda k: (records.get(k, {}).get("last_managed") or "", k.lower()), reverse=reverse)
+    elif mode == "state":
+        keys = sorted(keys, key=lambda k: (records.get(k, {}).get("state") or "undefined", k.lower()), reverse=reverse)
     page, pages = paginate(len(keys) if keys else 1, page, cfg)
     page_keys = page_slice(keys, page, cfg)
     return presets, keys, page_keys, page, pages
+
+def presets_records() -> Dict[str, Dict]:
+    return load_preset_records()
 
 def delete_presets_by_indexes(cfg: Dict, page: int, indexes: List[int]) -> Tuple[int, List[str]]:
     presets, _keys, page_keys, _page, _pages = presets_view(cfg, page)
@@ -89,6 +104,7 @@ def apply_preset(cfg: Dict, name: str) -> Tuple[int, int, List[str]]:
 
     if total == 0:
         msgs.append("Nothing to install (all present or missing).")
+        mark_preset_managed(name, "applied")
         return ok, err, msgs
 
     for idx, mod in enumerate(work, start=1):
@@ -103,6 +119,7 @@ def apply_preset(cfg: Dict, name: str) -> Tuple[int, int, List[str]]:
         msgs.append(f"{mod.name}: {'OK' if success else 'ERR'} ({msg})")
 
     print(f"Done: installed {ok}/{total}. Errors: {err}.")
+    mark_preset_managed(name, "applied")
     return ok, err, msgs
 
 def deactivate_preset(cfg: Dict, name: str) -> Tuple[int, int, List[str]]:
@@ -122,5 +139,6 @@ def deactivate_preset(cfg: Dict, name: str) -> Tuple[int, int, List[str]]:
         else:
             fail += 1
         msgs.append(f"{nm}: {'OK' if success else 'ERR'} ({msg})")
+    mark_preset_managed(name, "deactivated")
     return ok, fail, msgs
     
