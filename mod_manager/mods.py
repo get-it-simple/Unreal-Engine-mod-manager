@@ -84,19 +84,24 @@ def import_mod_file(cfg: Dict, src: Path, replace: bool = False) -> Tuple[bool, 
 
 def mod_image_path(cfg: Dict, mod_name: str) -> Path | None:
     images_dir = Path(cfg.get("mods_source_dir") or "").expanduser() / "images"
-    for ext in [".png", ".gif", ".ppm", ".pgm"]:
+    for ext in [".png", ".gif", ".jpg", ".jpeg", ".bmp", ".webp", ".ppm", ".pgm"]:
         candidate = images_dir / f"{mod_name}{ext}"
         if candidate.exists():
             return candidate
     return None
 
 def import_mod_image(cfg: Dict, mod_name: str, src: Path) -> Tuple[bool, str]:
+    from .image import save_as_png
     images_dir = Path(cfg.get("mods_source_dir") or "").expanduser() / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
+    dst_png = images_dir / f"{mod_name}.png"
+    if src.suffix.lower() == ".png" and src.resolve() == dst_png.resolve():
+        return True, dst_png.name
+    if save_as_png(src, dst_png):
+        return True, dst_png.name
     dst = images_dir / f"{mod_name}{src.suffix.lower()}"
-    if src.resolve() == dst.resolve():
-        return True, dst.name
-    shutil.copy2(src, dst)
+    if src.resolve() != dst.resolve():
+        shutil.copy2(src, dst)
     return True, dst.name
 
 def apply_mods_batch(mods: List[ModItem]) -> List[Tuple[bool, str]]:

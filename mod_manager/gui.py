@@ -8,6 +8,8 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Callable, Dict, List
 
 from .cli_utils import ensure_paths, open_folder
+from .image import load_scaled as _load_image_gdi
+from .log import logger
 from .mods import (
     add_label_to_mods,
     apply_mods_page,
@@ -190,6 +192,7 @@ class ModManagerGui(tk.Tk):
     def _run_action(self, label: str, worker: Callable, done: Callable | None = None) -> None:
         if self.busy:
             return
+        logger.info("action: %s", label)
         self._set_busy(True, f"{label}...")
 
         def run():
@@ -206,10 +209,12 @@ class ModManagerGui(tk.Tk):
     def _finish_action(self, error, result, done: Callable | None) -> None:
         try:
             if error:
+                logger.error("action error: %s", error)
                 self.status_var.set(str(error))
                 messagebox.showerror("Error", str(error))
             elif done:
                 done(result)
+                logger.info("action result: %s", self.status_var.get())
         finally:
             self._set_busy(False)
 
@@ -410,15 +415,15 @@ class ModManagerGui(tk.Tk):
         path = mod_image_path(self.cfg, name)
         img = None
         if path:
+            max_h = max(28, int(width * 0.65))
             try:
                 raw = tk.PhotoImage(file=str(path))
-                max_h = max(28, int(width * 0.65))
                 src_w = max(1, raw.width())
                 src_h = max(1, raw.height())
                 fit_w = min(width, max(1, int(src_w * max_h / src_h)))
                 img = self._resize_image(raw, fit_w)
             except tk.TclError:
-                img = None
+                img = _load_image_gdi(path, width, max_h)
         if img is None:
             height = max(28, int(width * 0.65))
             img = tk.PhotoImage(width=width, height=height)
@@ -443,10 +448,9 @@ class ModManagerGui(tk.Tk):
                 index = int(row)
                 if 1 <= index <= len(self.current_mods_shown):
                     default_name = self.current_mods_shown[index - 1].name
-            mod_name = self._choose_mod_for_image(default_name)
-            if mod_name:
+            if default_name:
                 for path in image_paths:
-                    tasks.append(("image", path, mod_name, True))
+                    tasks.append(("image", path, default_name, True))
         for path in mod_paths:
             dst_exists = ((self.cfg.get("mods_source_dir") or "") and any(m.name == path.name for m in self.current_mod_items))
             replace = True
