@@ -339,6 +339,7 @@ class ModManagerGui(tk.Tk):
             ("game_mods_dir", "Game mods folder"),
             ("mods_source_dir", "Mods source folder"),
             ("mod_extensions", "Mod extensions"),
+            ("link_prefix", "Link prefix"),
             ("page_size", "Page size"),
             ("max_mod_name_len", "Max mod name length"),
             ("max_preset_name_len", "Max preset name length"),

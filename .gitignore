@@ -7,3 +7,4 @@ mod_manager/__pycache__/*
 dist
 build
 mod-manager-gui.spec
+mod-manager.log

@@ -30,10 +30,16 @@ def is_mod_file(path: Path, cfg: Dict) -> bool:
 def is_image_file(path: Path) -> bool:
     return path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
 
+def _link_dest_name(p: Path, link_prefix: str) -> str:
+    if not link_prefix or p.is_dir():
+        return p.name
+    return p.stem + link_prefix + p.suffix
+
 def discover_mods(cfg: Dict) -> List[ModItem]:
     src_dir = Path(cfg.get("mods_source_dir") or "").expanduser()
     dst_dir = Path(cfg.get("game_mods_dir") or "").expanduser()
     show_all, exts = parse_extensions(cfg)
+    link_prefix = (cfg.get("link_prefix") or "").strip()
 
     items: List[ModItem] = []
     if not src_dir.exists():
@@ -42,7 +48,7 @@ def discover_mods(cfg: Dict) -> List[ModItem]:
     for p in sorted(src_dir.iterdir(), key=lambda x: (x.is_file(), x.name.lower())):
         if p.is_file():
             if (show_all or p.suffix.lower() in exts):
-                dest = dst_dir / p.name
+                dest = dst_dir / _link_dest_name(p, link_prefix)
                 installed = dest.exists() or dest.is_symlink()
                 items.append(ModItem(name=p.name, src=p, dest=dest, is_dir=False, installed=installed))
         elif p.is_dir():
