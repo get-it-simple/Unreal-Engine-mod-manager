@@ -77,6 +77,41 @@ class WrapFrame(ttk.Frame):
             used += need
             col += 1
 
+class _Tooltip:
+    _DELAY = 100
+
+    def __init__(self, widget, text: str):
+        self._widget = widget
+        self._text = text
+        self._tip = None
+        self._job = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._cancel, add="+")
+        widget.bind("<ButtonPress>", self._cancel, add="+")
+
+    def _schedule(self, _=None):
+        self._cancel()
+        self._job = self._widget.after(self._DELAY, self._show)
+
+    def _cancel(self, _=None):
+        if self._job:
+            self._widget.after_cancel(self._job)
+            self._job = None
+        if self._tip:
+            self._tip.destroy()
+            self._tip = None
+
+    def _show(self):
+        if self._tip:
+            return
+        x = self._widget.winfo_rootx()
+        y = self._widget.winfo_rooty() + self._widget.winfo_height() + 4
+        self._tip = tk.Toplevel(self._widget)
+        self._tip.wm_overrideredirect(True)
+        self._tip.wm_geometry(f"+{x}+{y}")
+        ttk.Label(self._tip, text=self._text, relief="solid", padding=(6, 3)).pack()
+
+
 class ModManagerGui(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -89,7 +124,7 @@ class ModManagerGui(tk.Tk):
         self.search_var = tk.StringVar()
         self.label_filter_var = tk.StringVar()
         self.label_edit_var = tk.StringVar()
-        self.order_var = tk.StringVar(value="d")
+        self.order_var = tk.StringVar(value="Default")
         self.status_var = tk.StringVar()
         self.placeholder_images: Dict[str, tk.PhotoImage] = {}
         self.current_mod_items = []
@@ -140,11 +175,13 @@ class ModManagerGui(tk.Tk):
         style.configure("Mods.Treeview", rowheight=max(30, int(34 * scale)))
 
     def _apply_button_widths(self) -> None:
+        scale = self._button_scale()
         for widget in self.action_widgets:
             try:
                 text = str(widget.cget("text"))
                 if text:
-                    widget.configure(width=max(int(14 * self._button_scale()), len(text) + 2))
+                    w = max(3, int(4 * scale)) if len(text) <= 3 else max(int(14 * scale), len(text) + 2)
+                    widget.configure(width=w)
                     if isinstance(widget.master, WrapFrame):
                         widget.master.after_idle(widget.master._arrange)
             except tk.TclError:
@@ -170,9 +207,12 @@ class ModManagerGui(tk.Tk):
         status = ttk.Label(root, textvariable=self.status_var, anchor="w")
         status.pack(fill="x", pady=(8, 0))
 
-    def _button(self, master, text: str, command: Callable):
-        width = max(int(14 * self._button_scale()), len(text) + 2)
+    def _button(self, master, text: str, command: Callable, tooltip: str = ""):
+        scale = self._button_scale()
+        width = max(3, int(4 * scale)) if len(text) <= 3 else max(int(14 * scale), len(text) + 2)
         btn = ttk.Button(master, text=text, command=command, width=width)
+        if tooltip:
+            _Tooltip(btn, tooltip)
         self.action_widgets.append(btn)
         return btn
 
@@ -228,42 +268,41 @@ class ModManagerGui(tk.Tk):
         self.label_filter_box = AutocompleteCombobox(top, textvariable=self.label_filter_var, width=18)
         top.add(self.label_filter_box, padx=(6, 12))
         top.add(ttk.Label(top, text="Order"))
-        top.add(ttk.Combobox(top, textvariable=self.order_var, values=["d", "cd"], width=6, state="readonly"), padx=(6, 12))
-        top.add(self._button(top, "List", self.refresh_mods))
-        top.add(self._button(top, "Search", self._mods_search), padx=(6, 0))
-        top.add(self._button(top, "Clear", self._mods_clear), padx=(6, 0))
-        self.mods_tree = ttk.Treeview(self.mods_tab, columns=("name", "state", "label", "last"), show="tree headings", selectmode="extended", style="Mods.Treeview")
-        self.mods_tree.heading("#0", text="Image")
+        top.add(ttk.Combobox(top, textvariable=self.order_var, values=["Default", "Created date"], width=14, state="readonly"), padx=(6, 12))
+        top.add(self._button(top, "↺", self._mods_search, "Search / Refresh"))
+        top.add(self._button(top, "✕", self._mods_clear, "Clear"), padx=(6, 0))
+        self.mods_tree = ttk.Treeview(self.mods_tab, columns=("name", "label", "last"), show="tree headings", selectmode="extended", style="Mods.Treeview")
+        self.mods_tree.heading("#0", text="")
         self.mods_tree.heading("name", text="Mod", command=lambda: self._sort_mods("name"))
-        self.mods_tree.heading("state", text="Installed", command=lambda: self._sort_mods("installed"))
         self.mods_tree.heading("label", text="Label", command=lambda: self._sort_mods("label"))
         self.mods_tree.heading("last", text="Last managed", command=lambda: self._sort_mods("last_managed"))
         self.mods_tree.column("#0", width=int(self.cfg.get("placeholder_image_col_width", 56)), minwidth=36, stretch=False, anchor="center")
-        self.mods_tree.column("name", width=380)
-        self.mods_tree.column("state", width=90, anchor="center")
+        self.mods_tree.column("name", width=470)
         self.mods_tree.column("label", width=160)
         self.mods_tree.column("last", width=160)
+        self.mods_tree.tag_configure("installed", background="#d4edda")
         self.mods_tree.bind("<ButtonRelease-1>", self._save_placeholder_width)
+        self.mods_tree.bind("<Double-1>", lambda _: self._toggle_selected_mods())
         actions = WrapFrame(self.mods_tab)
         actions.pack(fill="x", side="bottom")
         self.mods_tree.pack(fill="both", expand=True, pady=8)
-        actions.add(self._button(actions, "Prev Page", lambda: self._change_mod_page(-1)))
-        actions.add(self._button(actions, "Next Page", lambda: self._change_mod_page(1)), padx=(6, 12))
+        actions.add(self._button(actions, "<", lambda: self._change_mod_page(-1), "Previous page"))
+        actions.add(self._button(actions, ">", lambda: self._change_mod_page(1), "Next page"), padx=(6, 12))
         actions.add(ttk.Label(actions, text="Page"))
         mod_page_spin = ttk.Spinbox(actions, from_=1, to=9999, textvariable=self.mod_page, width=6, command=self.refresh_mods)
         self.action_widgets.append(mod_page_spin)
         actions.add(mod_page_spin, padx=(6, 12))
-        actions.add(self._button(actions, "Install Page", self._install_page))
-        actions.add(self._button(actions, "Uninstall Page", self._uninstall_page), padx=(6, 0))
-        actions.add(self._button(actions, "Toggle Selected", self._toggle_selected_mods), padx=(6, 12))
-        actions.add(self._button(actions, "Import Mods", self._import_mod_files), padx=(6, 0))
-        actions.add(self._button(actions, "Import Folder", self._import_mod_folder), padx=(6, 0))
-        actions.add(self._button(actions, "Set Image", self._set_mod_image), padx=(6, 12))
+        actions.add(self._button(actions, "▼", self._install_page, "Install page"))
+        actions.add(self._button(actions, "▲", self._uninstall_page, "Uninstall page"), padx=(6, 0))
+        actions.add(self._button(actions, "⇄", self._toggle_selected_mods, "Toggle selected"), padx=(6, 12))
+        actions.add(self._button(actions, "📥", self._import_mod_files, "Import mods"), padx=(6, 0))
+        actions.add(self._button(actions, "📂", self._import_mod_folder, "Import folder"), padx=(6, 0))
+        actions.add(self._button(actions, "🖼", self._set_mod_image, "Set image"), padx=(6, 12))
         actions.add(ttk.Label(actions, text="Label"))
         self.label_edit_box = AutocompleteCombobox(actions, textvariable=self.label_edit_var, width=18)
         actions.add(self.label_edit_box, padx=(6, 6))
-        actions.add(self._button(actions, "Add Label", self._add_label_selected))
-        actions.add(self._button(actions, "Remove Label", self._remove_label_selected), padx=(6, 0))
+        actions.add(self._button(actions, "+", self._add_label_selected, "Add label"))
+        actions.add(self._button(actions, "-", self._remove_label_selected, "Remove label"), padx=(6, 0))
 
     def _build_presets(self) -> None:
         top = WrapFrame(self.presets_tab)
@@ -285,8 +324,8 @@ class ModManagerGui(tk.Tk):
         self.presets_tree.pack(fill="both", expand=True, pady=8)
         actions = WrapFrame(self.presets_tab)
         actions.pack(fill="x")
-        actions.add(self._button(actions, "Prev Page", lambda: self._change_preset_page(-1)))
-        actions.add(self._button(actions, "Next Page", lambda: self._change_preset_page(1)), padx=(6, 12))
+        actions.add(self._button(actions, "<", lambda: self._change_preset_page(-1), "Previous page"))
+        actions.add(self._button(actions, ">", lambda: self._change_preset_page(1), "Next page"), padx=(6, 12))
         actions.add(ttk.Label(actions, text="Page"))
         preset_page_spin = ttk.Spinbox(actions, from_=1, to=9999, textvariable=self.preset_page, width=6, command=self.refresh_presets)
         self.action_widgets.append(preset_page_spin)
@@ -321,18 +360,18 @@ class ModManagerGui(tk.Tk):
             else:
                 ttk.Entry(self.settings_tab, textvariable=var, width=70).grid(row=row, column=1, sticky="ew", padx=8, pady=4)
             if key in ["game_mods_dir", "mods_source_dir"]:
-                self._button(self.settings_tab, "Browse", lambda k=key: self._browse_setting(k)).grid(row=row, column=2, pady=4)
+                self._button(self.settings_tab, "…", lambda k=key: self._browse_setting(k), "Browse").grid(row=row, column=2, pady=4)
         self.settings_tab.columnconfigure(1, weight=1)
         buttons = WrapFrame(self.settings_tab)
         buttons.grid(row=len(rows), column=0, columnspan=3, sticky="ew", pady=(12, 0))
-        buttons.add(self._button(buttons, "Save Settings", self._save_settings))
-        buttons.add(self._button(buttons, "Open Source Folder", lambda: self._open_folder("source")), padx=(8, 0))
-        buttons.add(self._button(buttons, "Open Game Folder", lambda: self._open_folder("game")), padx=(8, 0))
+        buttons.add(self._button(buttons, "💾", self._save_settings, "Save settings"))
+        buttons.add(self._button(buttons, "📁", lambda: self._open_folder("source"), "Open source folder"), padx=(8, 0))
+        buttons.add(self._button(buttons, "📁", lambda: self._open_folder("game"), "Open game folder"), padx=(8, 0))
 
     def _build_broken(self) -> None:
         top = WrapFrame(self.broken_tab)
         top.pack(fill="x")
-        top.add(self._button(top, "List", self.refresh_broken))
+        top.add(self._button(top, "↺", self.refresh_broken, "Refresh"))
         top.add(self._button(top, "Remove Selected", self._remove_selected_broken), padx=(6, 0))
         top.add(self._button(top, "Remove All", self._remove_all_broken), padx=(6, 0))
         self.broken_tree = ttk.Treeview(self.broken_tab, columns=("kind", "source"), show="tree headings", selectmode="extended")
@@ -349,7 +388,7 @@ class ModManagerGui(tk.Tk):
 
     def _mod_order_mode(self) -> str:
         if self.mod_sort_key == "d":
-            return self.order_var.get().strip() or "d"
+            return "cd" if self.order_var.get().strip() == "Created date" else "d"
         return f"-{self.mod_sort_key}" if self.mod_sort_reverse else self.mod_sort_key
 
     def _preset_order_mode(self) -> str:
@@ -609,11 +648,12 @@ class ModManagerGui(tk.Tk):
         ttk.Style(self).configure("Mods.Treeview", rowheight=row_height)
         self.mods_tree.delete(*self.mods_tree.get_children())
         for i, mod in enumerate(shown, 1):
-            mark = "Yes" if mod.installed else "No"
             rec = records.get(mod.name, {})
             last_managed = rec.get("last_managed") or "-"
             image = self._placeholder(mod.name)
-            self.mods_tree.insert("", "end", iid=str(i), text="", image=image, values=(mod.name, mark, labels.get(mod.name, "-"), last_managed))
+            name_display = f"✓  {mod.name}" if mod.installed else mod.name
+            tags = ("installed",) if mod.installed else ()
+            self.mods_tree.insert("", "end", iid=str(i), text="", image=image, values=(name_display, labels.get(mod.name, "-"), last_managed), tags=tags)
         if selected_names:
             selected = [str(i) for i, mod in enumerate(shown, 1) if mod.name in selected_names]
             if selected:
