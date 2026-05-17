@@ -26,5 +26,9 @@ DEFAULT_CONFIG = {
     "page_size": 10,
     "max_mod_name_len": 28,
     "max_preset_name_len": 28,
-    "max_label_name_len": 12
+    "max_label_name_len": 12,
+    "button_size_percent": 100,
+    "gui_font_family": "",
+    "gui_font_size": 10,
+    "placeholder_image_col_width": 56
 }

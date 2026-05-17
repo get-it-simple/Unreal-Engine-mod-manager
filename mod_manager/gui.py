@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, ttk
 from typing import Callable, Dict, List
 
@@ -61,8 +62,47 @@ class ModManagerGui(tk.Tk):
         self.mod_sort_reverse = False
         self.preset_sort_key = "name"
         self.preset_sort_reverse = False
+        self.button_scale_values = ["25%", "50%", "75%", "100%", "125%", "150%", "175%", "200%"]
+        self._apply_gui_style()
         self._build()
         self.refresh_all()
+
+    def _button_scale(self) -> float:
+        try:
+            value = str(self.cfg.get("button_size_percent", 100)).strip().rstrip("%")
+            return max(25, int(value)) / 100
+        except Exception:
+            return 1
+
+    def _apply_gui_style(self) -> None:
+        font_family = (self.cfg.get("gui_font_family") or "").strip()
+        try:
+            font_size = max(6, int(self.cfg.get("gui_font_size", 10)))
+        except Exception:
+            font_size = 10
+        for font_name in ["TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont"]:
+            try:
+                options = {"size": font_size}
+                if font_family:
+                    options["family"] = font_family
+                tkfont.nametofont(font_name).configure(**options)
+            except tk.TclError:
+                pass
+        scale = self._button_scale()
+        style = ttk.Style(self)
+        style.configure("TButton", padding=(int(12 * scale), int(7 * scale)))
+        style.configure("TSpinbox", padding=(int(6 * scale), int(5 * scale)))
+        style.configure("TCombobox", padding=(int(4 * scale), int(3 * scale)))
+        style.configure("Treeview", rowheight=max(30, int(34 * scale)))
+
+    def _apply_button_widths(self) -> None:
+        for widget in self.action_widgets:
+            try:
+                text = str(widget.cget("text"))
+                if text:
+                    widget.configure(width=max(int(14 * self._button_scale()), len(text) + 2))
+            except tk.TclError:
+                pass
 
     def _build(self) -> None:
         root = ttk.Frame(self, padding=10)
@@ -85,7 +125,8 @@ class ModManagerGui(tk.Tk):
         status.pack(fill="x", pady=(8, 0))
 
     def _button(self, master, text: str, command: Callable):
-        btn = ttk.Button(master, text=text, command=command)
+        width = max(int(14 * self._button_scale()), len(text) + 2)
+        btn = ttk.Button(master, text=text, command=command, width=width)
         self.action_widgets.append(btn)
         return btn
 
@@ -142,15 +183,18 @@ class ModManagerGui(tk.Tk):
         self._button(top, "List", self.refresh_mods).pack(side="left")
         self._button(top, "Search", self._mods_search).pack(side="left", padx=(6, 0))
         self._button(top, "Clear", self._mods_clear).pack(side="left", padx=(6, 0))
-        self.mods_tree = ttk.Treeview(self.mods_tab, columns=("state", "label", "last"), show="tree headings", selectmode="extended")
-        self.mods_tree.heading("#0", text="Mod", command=lambda: self._sort_mods("name"))
+        self.mods_tree = ttk.Treeview(self.mods_tab, columns=("name", "state", "label", "last"), show="tree headings", selectmode="extended")
+        self.mods_tree.heading("#0", text="Image")
+        self.mods_tree.heading("name", text="Mod", command=lambda: self._sort_mods("name"))
         self.mods_tree.heading("state", text="Installed", command=lambda: self._sort_mods("installed"))
         self.mods_tree.heading("label", text="Label", command=lambda: self._sort_mods("label"))
         self.mods_tree.heading("last", text="Last managed", command=lambda: self._sort_mods("last_managed"))
-        self.mods_tree.column("#0", width=430)
+        self.mods_tree.column("#0", width=int(self.cfg.get("placeholder_image_col_width", 56)), minwidth=36, stretch=False, anchor="center")
+        self.mods_tree.column("name", width=380)
         self.mods_tree.column("state", width=90, anchor="center")
         self.mods_tree.column("label", width=160)
         self.mods_tree.column("last", width=160)
+        self.mods_tree.bind("<ButtonRelease-1>", self._save_placeholder_width)
         self.mods_tree.pack(fill="both", expand=True, pady=8)
         actions = ttk.Frame(self.mods_tab)
         actions.pack(fill="x")
@@ -208,12 +252,22 @@ class ModManagerGui(tk.Tk):
             ("max_mod_name_len", "Max mod name length"),
             ("max_preset_name_len", "Max preset name length"),
             ("max_label_name_len", "Max label name length"),
+            ("button_size_percent", "Button size"),
+            ("gui_font_family", "Font"),
+            ("gui_font_size", "Font size"),
         ]
         for row, (key, label) in enumerate(rows):
             ttk.Label(self.settings_tab, text=label).grid(row=row, column=0, sticky="w", pady=4)
             var = tk.StringVar(value=str(self.cfg.get(key, "")))
+            if key == "button_size_percent":
+                var = tk.StringVar(value=f"{str(self.cfg.get(key, 100)).strip().rstrip('%')}%")
             self.setting_vars[key] = var
-            ttk.Entry(self.settings_tab, textvariable=var, width=70).grid(row=row, column=1, sticky="ew", padx=8, pady=4)
+            if key == "button_size_percent":
+                ttk.Combobox(self.settings_tab, textvariable=var, values=self.button_scale_values, state="readonly", width=12).grid(row=row, column=1, sticky="w", padx=8, pady=4)
+            elif key == "gui_font_family":
+                ttk.Combobox(self.settings_tab, textvariable=var, values=sorted(tkfont.families()), width=40).grid(row=row, column=1, sticky="w", padx=8, pady=4)
+            else:
+                ttk.Entry(self.settings_tab, textvariable=var, width=70).grid(row=row, column=1, sticky="ew", padx=8, pady=4)
             if key in ["game_mods_dir", "mods_source_dir"]:
                 self._button(self.settings_tab, "Browse", lambda k=key: self._browse_setting(k)).grid(row=row, column=2, pady=4)
         self.settings_tab.columnconfigure(1, weight=1)
@@ -267,6 +321,12 @@ class ModManagerGui(tk.Tk):
         self.preset_page.set(1)
         self.refresh_presets()
 
+    def _save_placeholder_width(self, _event=None) -> None:
+        width = int(self.mods_tree.column("#0", "width"))
+        if width != int(self.cfg.get("placeholder_image_col_width", 56)):
+            self.cfg["placeholder_image_col_width"] = width
+            save_config(self.cfg)
+
     def _placeholder(self, name: str) -> tk.PhotoImage:
         if name in self.placeholder_images:
             return self.placeholder_images[name]
@@ -298,7 +358,7 @@ class ModManagerGui(tk.Tk):
             mark = "Yes" if mod.installed else "No"
             rec = records.get(mod.name, {})
             last_managed = rec.get("last_managed") or "-"
-            self.mods_tree.insert("", "end", iid=str(i), text=mod.name, image=self._placeholder(mod.name), values=(mark, labels.get(mod.name, "-"), last_managed))
+            self.mods_tree.insert("", "end", iid=str(i), text="", image=self._placeholder(mod.name), values=(mod.name, mark, labels.get(mod.name, "-"), last_managed))
         if selected_names:
             selected = [str(i) for i, mod in enumerate(shown, 1) if mod.name in selected_names]
             if selected:
@@ -470,15 +530,18 @@ class ModManagerGui(tk.Tk):
 
         def worker():
             for key, value in values.items():
-                if key in ["page_size", "max_mod_name_len", "max_preset_name_len", "max_label_name_len"]:
-                    if value.isdigit():
-                        self.cfg[key] = int(value)
+                if key in ["page_size", "max_mod_name_len", "max_preset_name_len", "max_label_name_len", "button_size_percent", "gui_font_size"]:
+                    numeric = value.rstrip("%")
+                    if numeric.isdigit():
+                        self.cfg[key] = int(numeric)
                 else:
                     self.cfg[key] = value
             save_config(self.cfg)
             return "Settings saved."
 
         def done(msg) -> None:
+            self._apply_gui_style()
+            self._apply_button_widths()
             self.status_var.set(msg)
             self.refresh_all()
 
