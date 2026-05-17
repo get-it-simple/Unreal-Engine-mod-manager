@@ -89,7 +89,8 @@ class WrapFrame(ttk.Frame):
                 pl = padx[0] if isinstance(padx, tuple) else padx
                 pr = padx[1] if isinstance(padx, tuple) else padx
                 x += pl
-                widget.place(x=x, y=y + rp)
+                wh = widget.winfo_reqheight()
+                widget.place(x=x, y=y + rp + (rh - wh) // 2)
                 x += widget.winfo_reqwidth() + pr
             y += rh + rp * 2
         h = max(1, y)
