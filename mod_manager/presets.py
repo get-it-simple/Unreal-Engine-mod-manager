@@ -4,6 +4,7 @@ from typing import Dict, List, Tuple
 
 from .mods import discover_mods, list_installed_mods, apply_mods_batch, deactivate_mod
 from .storage import load_presets, save_presets
+from .cli_utils import page_slice, paginate
 
 def save_preset_from_installed(cfg: Dict, name: str) -> Tuple[bool, str]:
     presets = load_presets()
@@ -26,6 +27,41 @@ def delete_presets_by_names(names: List[str]) -> Tuple[int, List[str]]:
             missing.append(nm)
     save_presets(presets)
     return removed, missing
+
+def presets_view(cfg: Dict, page: int) -> Tuple[Dict, List[str], List[str], int, int]:
+    presets = load_presets()
+    keys = list(presets.keys())
+    page, pages = paginate(len(keys) if keys else 1, page, cfg)
+    page_keys = page_slice(keys, page, cfg)
+    return presets, keys, page_keys, page, pages
+
+def delete_presets_by_indexes(cfg: Dict, page: int, indexes: List[int]) -> Tuple[int, List[str]]:
+    presets, _keys, page_keys, _page, _pages = presets_view(cfg, page)
+    to_delete = []
+    for num in indexes:
+        if 1 <= num <= len(page_keys):
+            to_delete.append(page_keys[num - 1])
+    return delete_presets_by_names(to_delete)
+
+def toggle_presets_by_indexes(cfg: Dict, page: int, indexes: List[int], installed_set: set[str]) -> Tuple[str, List[str], bool]:
+    presets, _keys, page_keys, _page, _pages = presets_view(cfg, page)
+    last_operation = ""
+    messages: List[str] = []
+    has_errors = False
+    for num in indexes:
+        if 1 <= num <= len(page_keys):
+            name = page_keys[num - 1]
+            mods = presets.get(name, [])
+            all_on = bool(mods) and all(nm in installed_set for nm in mods)
+            if all_on:
+                okc, errc, msgs = deactivate_preset(cfg, name)
+                last_operation = f"Deactivated: {okc}, Errors: {errc}"
+            else:
+                okc, errc, msgs = apply_preset(cfg, name)
+                last_operation = f"Installed: {okc}, Errors: {errc}"
+                has_errors = has_errors or errc > 0
+            messages.extend(msgs)
+    return last_operation, messages, has_errors
 
 def apply_preset(cfg: Dict, name: str) -> Tuple[int, int, List[str]]:
     presets = load_presets()

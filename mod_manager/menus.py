@@ -8,9 +8,19 @@ from typing import Dict, List, Tuple
 from app_paths import PRINT_SIZE
 
 from .platform_utils import is_windows
-from .storage import load_config, save_config, load_labels, save_labels, load_presets
-from .mods import discover_mods, list_broken_links, deactivate_mod, apply_mod, apply_mods_batch
-from .presets import save_preset_from_installed, delete_presets_by_names, deactivate_preset, apply_preset
+from .storage import load_config, save_config
+from .mods import (
+    discover_mods,
+    list_broken_links,
+    deactivate_mod,
+    mods_view,
+    add_label_to_mods,
+    remove_label_from_mods,
+    deactivate_mods_page,
+    apply_mods_page,
+    toggle_mods_by_indexes,
+)
+from .presets import save_preset_from_installed, delete_presets_by_indexes, presets_view, toggle_presets_by_indexes
 from .cli_utils import (
     prompt,
     pause,
@@ -21,8 +31,6 @@ from .cli_utils import (
     page_slice,
     print_pager,
     open_folder,
-    filter_items_by_query,
-    sort_items,
     smart_prompt,
     truncate_text,
     format_order_short,
@@ -243,15 +251,7 @@ def menu_mods_toggle(cfg: Dict):
         from .cli_utils import _PT_AVAILABLE
         if not _PT_AVAILABLE:
             print("Advanced completion disabled. Install: pip install prompt_toolkit\n")
-        items_all = discover_mods(cfg)
-        items = filter_items_by_query(items_all, search_query)
-        labels = load_labels()
-        if label_filter:
-            lf = label_filter.lower()
-            items = [m for m in items if (labels.get(m.name) or "").lower() == lf]
-        items = sort_items(items, order_mode)
-        page, pages = paginate(len(items) if items else 1, page, cfg)
-        shown = page_slice(items, page, cfg) if items else []
+        items, shown, page, pages, labels = mods_view(cfg, page, label_filter, search_query, order_mode)
 
         print(f"Page {page}/{pages}    Order: {format_order_short(order_mode)}    Filter: {_filter_text(label_filter, search_query)}")
         print("=" * PRINT_SIZE)
@@ -326,23 +326,10 @@ def menu_mods_toggle(cfg: Dict):
                     if not targets:
                         last_operation = "Invalid index."
                         continue
-                    labels = load_labels()
                     if cmd == "l+":
-                        for file_name in targets:
-                            labels[file_name] = label_name
-                        save_labels(labels)
-                        last_operation = f"Label added: {label_name} -> {', '.join(targets)}"
+                        last_operation = add_label_to_mods(label_name, targets)
                     else:
-                        removed = []
-                        for file_name in targets:
-                            if labels.get(file_name) == label_name:
-                                labels.pop(file_name, None)
-                                removed.append(file_name)
-                        if removed:
-                            save_labels(labels)
-                            last_operation = f"Label removed: {label_name} -> {', '.join(removed)}"
-                        else:
-                            last_operation = "Label not found."
+                        last_operation = remove_label_from_mods(label_name, targets)
                 else:
                     last_operation = "Use: /l+ <label> <indexes> or /l- <label> <indexes>"
                 continue
@@ -362,42 +349,19 @@ def menu_mods_toggle(cfg: Dict):
                     page = max(1, int(args[0]))
                 continue
             if cmd in ["uninstall", "install"]:
-                target_page = page
-                if args and args[0].isdigit():
-                    target_page = max(1, int(args[0]))
-                target_page, _pages = paginate(len(items) if items else 1, target_page, cfg)
-                target_shown = page_slice(items, target_page, cfg) if items else []
+                target_page = max(1, int(args[0])) if args and args[0].isdigit() else page
                 if cmd == "uninstall":
-                    for m in target_shown:
-                        if m.installed:
-                            deactivate_mod(m)
+                    target_page, _count = deactivate_mods_page(cfg, target_page, label_filter, search_query, order_mode)
                     last_operation = f"All on page {target_page} uninstalled."
                 else:
-                    to_install = [m for m in target_shown if not m.installed]
-                    total = len(to_install)
-                    err = 0
-                    for idx, m in enumerate(to_install, start=1):
-                        print(f"[{idx}/{total}] Installing {m.name} ...")
-                    results = apply_mods_batch(to_install)
-                    for m, (ok, msg) in zip(to_install, results):
-                        if not ok:
-                            err += 1
-                            print(f"  ERR — {msg}")
+                    target_page, total, err = apply_mods_page(cfg, target_page, label_filter, search_query, order_mode)
                     if total > 0 and err > 0:
                         pause()
                     last_operation = f"Installed {total - err}/{total} on page {target_page}. Errors: {err}."
                 continue
             if cmd in ["toggle"]:
                 nums = parse_multi_choice(" ".join(args))
-                for num in nums:
-                    if 1 <= num <= len(shown):
-                        m = shown[num - 1]
-                        if m.installed:
-                            ok, msg = deactivate_mod(m)
-                            last_operation = f"Uninstall {m.name}: {'OK' if ok else 'ERR'} — {msg}"
-                        else:
-                            ok, msg = apply_mod(m)
-                            last_operation = f"Install {m.name}: {'OK' if ok else 'ERR'} — {msg}"
+                last_operation = toggle_mods_by_indexes(shown, nums)
                 continue
             if cmd == "/":
                 continue
@@ -427,18 +391,10 @@ def menu_mods_toggle(cfg: Dict):
                 action = args[1].lower()
                 label_name = args[2]
                 file_name = _shown_name(shown, args[3]) or args[3]
-                labels = load_labels()
                 if action == "add":
-                    labels[file_name] = label_name
-                    save_labels(labels)
-                    last_operation = f"Label added: {file_name} -> {label_name}"
+                    last_operation = add_label_to_mods(label_name, [file_name])
                 else:
-                    if labels.get(file_name) == label_name:
-                        labels.pop(file_name, None)
-                        save_labels(labels)
-                        last_operation = f"Label removed: {file_name} -> {label_name}"
-                    else:
-                        last_operation = "Label not found."
+                    last_operation = remove_label_from_mods(label_name, [file_name])
             else:
                 last_operation = 'Use: label add/remove "file name" "labelName"'
             continue
@@ -454,22 +410,11 @@ def menu_mods_toggle(cfg: Dict):
                 last_operation = "Invalid order mode. Use: d, default, cd, or created date."
             continue
         if low == "a":
-            for m in shown:
-                if m.installed:
-                    deactivate_mod(m)
+            deactivate_mods_page(cfg, page, label_filter, search_query, order_mode)
             last_operation = "All on this page uninstalled."
             continue
         if low == "i":
-            to_install = [m for m in shown if not m.installed]
-            total = len(to_install)
-            err = 0
-            for idx, m in enumerate(to_install, start=1):
-                print(f"[{idx}/{total}] Installing {m.name} ...")
-            results = apply_mods_batch(to_install)
-            for m, (ok, msg) in zip(to_install, results):
-                if not ok:
-                    err += 1
-                    print(f"  ERR — {msg}")
+            _target_page, total, err = apply_mods_page(cfg, page, label_filter, search_query, order_mode)
             if total > 0 and err > 0:
                 pause()
             continue
@@ -478,15 +423,7 @@ def menu_mods_toggle(cfg: Dict):
             page = page_sel
             continue
         nums = parse_multi_choice(choice)
-        for num in nums:
-            if 1 <= num <= len(shown):
-                m = shown[num - 1]
-                if m.installed:
-                    ok, msg = deactivate_mod(m)
-                    last_operation = f"Uninstall {m.name}: {'OK' if ok else 'ERR'} — {msg}"
-                else:
-                    ok, msg = apply_mod(m)
-                    last_operation = f"Install {m.name}: {'OK' if ok else 'ERR'} — {msg}"
+        last_operation = toggle_mods_by_indexes(shown, nums)
 
 def menu_presets(cfg: Dict):
     if not ensure_paths(cfg):
@@ -498,12 +435,7 @@ def menu_presets(cfg: Dict):
         from .cli_utils import _PT_AVAILABLE
         if not _PT_AVAILABLE:
             print("Advanced completion disabled. Install: pip install prompt_toolkit\n")
-        presets = load_presets()
-        keys = list(presets.keys())
-        if not keys:
-            keys = []
-        page, pages = paginate(len(keys) if keys else 1, page, cfg)
-        page_keys = page_slice(keys, page, cfg)
+        presets, keys, page_keys, page, pages = presets_view(cfg, page)
 
         items = discover_mods(cfg)
         installed_set = {m.name for m in items if m.installed}
@@ -557,30 +489,16 @@ def menu_presets(cfg: Dict):
             if cmd in ["delete"]:
                 after = " ".join(args).strip()
                 nums = parse_multi_choice(after)
-                to_delete = []
-                for num in nums:
-                    if 1 <= num <= len(page_keys):
-                        to_delete.append(page_keys[num - 1])
-                count, missing = delete_presets_by_names(to_delete)
+                count, missing = delete_presets_by_indexes(cfg, page, nums)
                 last_operation = f"Deleted: {count}. Missing: {', '.join(missing) if missing else 'none'}"
                 continue
             if cmd in ["toggle"]:
                 nums = parse_multi_choice(" ".join(args))
-                for num in nums:
-                    if 1 <= num <= len(page_keys):
-                        name = page_keys[num - 1]
-                        mods = presets.get(name, [])
-                        all_on = bool(mods) and all(nm in installed_set for nm in mods)
-                        if all_on:
-                            okc, errc, msgs = deactivate_preset(cfg, name)
-                            last_operation = f"Deactivated: {okc}, Errors: {errc}"
-                        else:
-                            okc, errc, msgs = apply_preset(cfg, name)
-                            last_operation = f"Installed: {okc}, Errors: {errc}"
-                            if errc > 0:
-                                pause()
-                        for m in msgs:
-                            print(" - ", m)
+                last_operation, msgs, has_errors = toggle_presets_by_indexes(cfg, page, nums, installed_set)
+                if has_errors:
+                    pause()
+                for m in msgs:
+                    print(" - ", m)
                 continue
             if cmd == "/":
                 continue
@@ -622,11 +540,7 @@ def menu_presets(cfg: Dict):
         if low.startswith("d ") or low.startswith("del "):
             after = low.split(" ", 1)[1].strip()
             nums = parse_multi_choice(after)
-            to_delete = []
-            for num in nums:
-                if 1 <= num <= len(page_keys):
-                    to_delete.append(page_keys[num - 1])
-            count, missing = delete_presets_by_names(to_delete)
+            count, missing = delete_presets_by_indexes(cfg, page, nums)
             last_operation = f"Deleted: {count}. Missing: {', '.join(missing) if missing else 'none'}"
             continue
         page_sel = parse_page_choice(choice)
@@ -634,21 +548,11 @@ def menu_presets(cfg: Dict):
             page = page_sel
             continue
         nums = parse_multi_choice(choice)
-        for num in nums:
-            if 1 <= num <= len(page_keys):
-                name = page_keys[num - 1]
-                mods = presets.get(name, [])
-                all_on = bool(mods) and all(nm in installed_set for nm in mods)
-                if all_on:
-                    okc, errc, msgs = deactivate_preset(cfg, name)
-                    last_operation = f"Deactivated: {okc}, Errors: {errc}"
-                else:
-                    okc, errc, msgs = apply_preset(cfg, name)
-                    last_operation = f"Installed: {okc}, Errors: {errc}"
-                    if errc > 0:
-                        pause()
-                for m in msgs:
-                    print(" - ", m)
+        last_operation, msgs, has_errors = toggle_presets_by_indexes(cfg, page, nums, installed_set)
+        if has_errors:
+            pause()
+        for m in msgs:
+            print(" - ", m)
 
 def main_menu():
     cfg = load_config()
