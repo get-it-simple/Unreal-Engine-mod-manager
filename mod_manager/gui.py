@@ -50,6 +50,7 @@ class WrapFrame(ttk.Frame):
     def __init__(self, master, **kwargs):
         super().__init__(master, **kwargs)
         self.items = []
+        self._placed_h = 0
         self.bind("<Configure>", lambda _event: self.after_idle(self._arrange))
 
     def add(self, widget, padx=0, pady=3, sticky="w") -> None:
@@ -63,19 +64,38 @@ class WrapFrame(ttk.Frame):
 
     def _arrange(self) -> None:
         width = max(1, self.winfo_width())
-        row = 0
-        col = 0
-        used = 0
-        for widget, padx, pady, sticky in self.items:
+        for widget, *_ in self.items:
             widget.grid_forget()
-            need = widget.winfo_reqwidth() + self._pad_width(padx)
-            if col > 0 and used + need > width:
-                row += 1
-                col = 0
+            widget.place_forget()
+        rows: list = []
+        row: list = []
+        used = 0
+        for item in self.items:
+            need = item[0].winfo_reqwidth() + self._pad_width(item[1])
+            if row and used + need > width:
+                rows.append(row)
+                row = []
                 used = 0
-            widget.grid(row=row, column=col, sticky=sticky, padx=padx, pady=pady)
+            row.append(item)
             used += need
-            col += 1
+        if row:
+            rows.append(row)
+        y = 0
+        for row_items in rows:
+            rh = max((w.winfo_reqheight() for w, *_ in row_items), default=28)
+            rp = max((it[2] for it in row_items), default=3)
+            x = 0
+            for widget, padx, pady, sticky in row_items:
+                pl = padx[0] if isinstance(padx, tuple) else padx
+                pr = padx[1] if isinstance(padx, tuple) else padx
+                x += pl
+                widget.place(x=x, y=y + rp)
+                x += widget.winfo_reqwidth() + pr
+            y += rh + rp * 2
+        h = max(1, y)
+        if self._placed_h != h:
+            self._placed_h = h
+            self.configure(height=h)
 
 class _Tooltip:
     _DELAY = 100
@@ -168,9 +188,11 @@ class ModManagerGui(tk.Tk):
                 pass
         scale = self._button_scale()
         style = ttk.Style(self)
-        style.configure("TButton", padding=(int(12 * scale), int(7 * scale)))
-        style.configure("TSpinbox", padding=(int(6 * scale), int(5 * scale)))
-        style.configure("TCombobox", padding=(int(4 * scale), int(3 * scale)))
+        vpad = int(7 * scale)
+        style.configure("TButton", padding=(int(12 * scale), vpad))
+        style.configure("TSpinbox", padding=(int(6 * scale), vpad))
+        style.configure("TCombobox", padding=(int(4 * scale), vpad))
+        style.configure("TEntry", padding=(int(4 * scale), vpad))
         style.configure("Treeview", rowheight=max(30, int(34 * scale)))
         style.configure("Mods.Treeview", rowheight=max(30, int(34 * scale)))
 
@@ -279,7 +301,7 @@ class ModManagerGui(tk.Tk):
         self.mods_tree.column("#0", width=int(self.cfg.get("placeholder_image_col_width", 56)), minwidth=36, stretch=False, anchor="center")
         self.mods_tree.column("name", width=470)
         self.mods_tree.column("label", width=160)
-        self.mods_tree.column("last", width=160)
+        self.mods_tree.column("last", width=160, stretch=False)
         self.mods_tree.tag_configure("installed", background="#d4edda")
         self.mods_tree.bind("<ButtonRelease-1>", self._save_placeholder_width)
         self.mods_tree.bind("<Double-1>", lambda _: self._toggle_selected_mods())
@@ -298,11 +320,13 @@ class ModManagerGui(tk.Tk):
         actions.add(self._button(actions, "📥", self._import_mod_files, "Import mods"), padx=(6, 0))
         actions.add(self._button(actions, "📂", self._import_mod_folder, "Import folder"), padx=(6, 0))
         actions.add(self._button(actions, "🖼", self._set_mod_image, "Set image"), padx=(6, 12))
-        actions.add(ttk.Label(actions, text="Label"))
-        self.label_edit_box = AutocompleteCombobox(actions, textvariable=self.label_edit_var, width=18)
-        actions.add(self.label_edit_box, padx=(6, 6))
-        actions.add(self._button(actions, "+", self._add_label_selected, "Add label"))
-        actions.add(self._button(actions, "-", self._remove_label_selected, "Remove label"), padx=(6, 0))
+        label_group = ttk.Frame(actions)
+        ttk.Label(label_group, text="Label").pack(side="left")
+        self.label_edit_box = AutocompleteCombobox(label_group, textvariable=self.label_edit_var, width=18)
+        self.label_edit_box.pack(side="left", padx=(6, 6))
+        self._button(label_group, "+", self._add_label_selected, "Add label").pack(side="left")
+        self._button(label_group, "-", self._remove_label_selected, "Remove label").pack(side="left", padx=(6, 0))
+        actions.add(label_group)
 
     def _build_presets(self) -> None:
         top = WrapFrame(self.presets_tab)
