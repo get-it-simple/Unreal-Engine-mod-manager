@@ -23,9 +23,10 @@ def _build_exe() -> int:
     pyinstaller = shutil.which("pyinstaller")
     if not pyinstaller:
         return _build_pyz()
+    mode = "--onefile" if os.environ.get("MOD_MANAGER_ONEFILE") == "1" else "--onedir"
     cmd = [
         pyinstaller,
-        "--onefile",
+        mode,
         "--windowed",
         "--name",
         "mod-manager-gui",

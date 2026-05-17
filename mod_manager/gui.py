@@ -49,6 +49,10 @@ class ModManagerGui(tk.Tk):
         self.order_var = tk.StringVar(value="d")
         self.status_var = tk.StringVar()
         self.placeholder_images: Dict[str, tk.PhotoImage] = {}
+        self.current_mod_items = []
+        self.current_mods_shown = []
+        self.current_mod_labels = {}
+        self.current_broken = []
         self._build()
         self.refresh_all()
 
@@ -198,6 +202,9 @@ class ModManagerGui(tk.Tk):
             return
         page, label, search, order = self._view_args()
         items, shown, page, pages, labels = mods_view(self.cfg, page, label, search, order)
+        self.current_mod_items = items
+        self.current_mods_shown = shown
+        self.current_mod_labels = labels
         self.mod_page.set(page)
         self.mods_tree.delete(*self.mods_tree.get_children())
         for i, mod in enumerate(shown, 1):
@@ -213,7 +220,10 @@ class ModManagerGui(tk.Tk):
         if not ensure_paths(self.cfg):
             return
         presets, keys, page_keys, page, pages = presets_view(self.cfg, max(1, int(self.preset_page.get() or 1)))
-        installed = {m.name for m in mods_view(self.cfg, 1, "", "", "d")[0] if m.installed}
+        if not self.search_var.get().strip() and not self.label_filter_var.get().strip() and self.current_mod_items:
+            installed = {m.name for m in self.current_mod_items if m.installed}
+        else:
+            installed = {m.name for m in mods_view(self.cfg, 1, "", "", "d")[0] if m.installed}
         self.preset_page.set(page)
         self.presets_tree.delete(*self.presets_tree.get_children())
         for i, name in enumerate(page_keys, 1):
@@ -227,6 +237,7 @@ class ModManagerGui(tk.Tk):
         if not ensure_paths(self.cfg):
             return
         broken = list_broken_links(self.cfg)
+        self.current_broken = broken
         self.broken_tree.delete(*self.broken_tree.get_children())
         for i, mod in enumerate(broken, 1):
             kind = "DIR" if mod.is_dir else "FILE"
@@ -258,29 +269,28 @@ class ModManagerGui(tk.Tk):
         page, label, search, order = self._view_args()
         page, total, err = apply_mods_page(self.cfg, page, label, search, order)
         self.status_var.set(f"Installed {total - err}/{total} on page {page}. Errors: {err}.")
-        self.refresh_all()
+        self.refresh_mods()
+        self.refresh_presets()
 
     def _uninstall_page(self) -> None:
         page, label, search, order = self._view_args()
         page, count = deactivate_mods_page(self.cfg, page, label, search, order)
         self.status_var.set(f"Uninstalled {count} on page {page}.")
-        self.refresh_all()
+        self.refresh_mods()
+        self.refresh_presets()
 
     def _toggle_selected_mods(self) -> None:
-        page, label, search, order = self._view_args()
-        _items, shown, _page, _pages, _labels = mods_view(self.cfg, page, label, search, order)
-        msg = toggle_mods_by_indexes(shown, self._selected_indexes(self.mods_tree))
+        msg = toggle_mods_by_indexes(self.current_mods_shown, self._selected_indexes(self.mods_tree))
         self.status_var.set(msg or "No mods selected.")
-        self.refresh_all()
+        self.refresh_mods()
+        self.refresh_presets()
 
     def _add_label_selected(self) -> None:
         label = self.label_edit_var.get().strip()
         if not label:
             messagebox.showerror("Label", "Enter label.")
             return
-        page, current_label, search, order = self._view_args()
-        _items, shown, _page, _pages, _labels = mods_view(self.cfg, page, current_label, search, order)
-        targets = [shown[i - 1].name for i in self._selected_indexes(self.mods_tree) if 1 <= i <= len(shown)]
+        targets = [self.current_mods_shown[i - 1].name for i in self._selected_indexes(self.mods_tree) if 1 <= i <= len(self.current_mods_shown)]
         self.status_var.set(add_label_to_mods(label, targets) if targets else "No mods selected.")
         self.refresh_mods()
 
@@ -289,9 +299,7 @@ class ModManagerGui(tk.Tk):
         if not label:
             messagebox.showerror("Label", "Enter label.")
             return
-        page, current_label, search, order = self._view_args()
-        _items, shown, _page, _pages, _labels = mods_view(self.cfg, page, current_label, search, order)
-        targets = [shown[i - 1].name for i in self._selected_indexes(self.mods_tree) if 1 <= i <= len(shown)]
+        targets = [self.current_mods_shown[i - 1].name for i in self._selected_indexes(self.mods_tree) if 1 <= i <= len(self.current_mods_shown)]
         self.status_var.set(remove_label_from_mods(label, targets) if targets else "No mods selected.")
         self.refresh_mods()
 
@@ -305,12 +313,16 @@ class ModManagerGui(tk.Tk):
         self.refresh_presets()
 
     def _toggle_selected_presets(self) -> None:
-        installed = {m.name for m in mods_view(self.cfg, 1, "", "", "d")[0] if m.installed}
+        if not self.search_var.get().strip() and not self.label_filter_var.get().strip() and self.current_mod_items:
+            installed = {m.name for m in self.current_mod_items if m.installed}
+        else:
+            installed = {m.name for m in mods_view(self.cfg, 1, "", "", "d")[0] if m.installed}
         msg, messages, has_errors = toggle_presets_by_indexes(self.cfg, int(self.preset_page.get() or 1), self._selected_indexes(self.presets_tree), installed)
         self.status_var.set(msg or "No presets selected.")
         if has_errors:
             messagebox.showwarning("Preset", "\n".join(messages))
-        self.refresh_all()
+        self.refresh_mods()
+        self.refresh_presets()
 
     def _delete_selected_presets(self) -> None:
         count, missing = delete_presets_by_indexes(self.cfg, int(self.preset_page.get() or 1), self._selected_indexes(self.presets_tree))
@@ -340,18 +352,16 @@ class ModManagerGui(tk.Tk):
         self.status_var.set(f"Open {target} folder: {'OK' if ok else 'ERR'} - {msg}")
 
     def _remove_selected_broken(self) -> None:
-        broken = list_broken_links(self.cfg)
-        targets = [broken[i - 1] for i in self._selected_indexes(self.broken_tree) if 1 <= i <= len(broken)]
+        targets = [self.current_broken[i - 1] for i in self._selected_indexes(self.broken_tree) if 1 <= i <= len(self.current_broken)]
         for mod in targets:
             deactivate_mod(mod)
         self.status_var.set(f"Removed broken links: {len(targets)}")
         self.refresh_broken()
 
     def _remove_all_broken(self) -> None:
-        broken = list_broken_links(self.cfg)
-        for mod in broken:
+        for mod in self.current_broken:
             deactivate_mod(mod)
-        self.status_var.set(f"Removed broken links: {len(broken)}")
+        self.status_var.set(f"Removed broken links: {len(self.current_broken)}")
         self.refresh_broken()
 
 def run_gui() -> int:
