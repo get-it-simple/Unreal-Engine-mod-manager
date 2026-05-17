@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-from typing import Dict, List
+from typing import Callable, Dict, List
 
 from .cli_utils import ensure_paths, open_folder
 from .mods import (
@@ -53,6 +54,8 @@ class ModManagerGui(tk.Tk):
         self.current_mods_shown = []
         self.current_mod_labels = {}
         self.current_broken = []
+        self.busy = False
+        self.action_widgets = []
         self._build()
         self.refresh_all()
 
@@ -76,6 +79,50 @@ class ModManagerGui(tk.Tk):
         status = ttk.Label(root, textvariable=self.status_var, anchor="w")
         status.pack(fill="x", pady=(8, 0))
 
+    def _button(self, master, text: str, command: Callable):
+        btn = ttk.Button(master, text=text, command=command)
+        self.action_widgets.append(btn)
+        return btn
+
+    def _set_busy(self, busy: bool, text: str = "") -> None:
+        self.busy = busy
+        state = "disabled" if busy else "normal"
+        for widget in self.action_widgets:
+            try:
+                widget.configure(state=state)
+            except tk.TclError:
+                pass
+        self.configure(cursor="watch" if busy else "")
+        if text:
+            self.status_var.set(text)
+        self.update_idletasks()
+
+    def _run_action(self, label: str, worker: Callable, done: Callable | None = None) -> None:
+        if self.busy:
+            return
+        self._set_busy(True, f"{label}...")
+
+        def run():
+            result = None
+            error = None
+            try:
+                result = worker()
+            except Exception as exc:
+                error = exc
+            self.after(0, lambda: self._finish_action(error, result, done))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _finish_action(self, error, result, done: Callable | None) -> None:
+        try:
+            if error:
+                self.status_var.set(str(error))
+                messagebox.showerror("Error", str(error))
+            elif done:
+                done(result)
+        finally:
+            self._set_busy(False)
+
     def _build_mods(self) -> None:
         top = ttk.Frame(self.mods_tab)
         top.pack(fill="x")
@@ -87,9 +134,9 @@ class ModManagerGui(tk.Tk):
         self.label_filter_box.pack(side="left", padx=(6, 12))
         ttk.Label(top, text="Order").pack(side="left")
         ttk.Combobox(top, textvariable=self.order_var, values=["d", "cd"], width=6, state="readonly").pack(side="left", padx=(6, 12))
-        ttk.Button(top, text="List", command=self.refresh_mods).pack(side="left")
-        ttk.Button(top, text="Search", command=self._mods_search).pack(side="left", padx=(6, 0))
-        ttk.Button(top, text="Clear", command=self._mods_clear).pack(side="left", padx=(6, 0))
+        self._button(top, "List", self.refresh_mods).pack(side="left")
+        self._button(top, "Search", self._mods_search).pack(side="left", padx=(6, 0))
+        self._button(top, "Clear", self._mods_clear).pack(side="left", padx=(6, 0))
         self.mods_tree = ttk.Treeview(self.mods_tab, columns=("state", "label"), show="tree headings", selectmode="extended")
         self.mods_tree.heading("#0", text="Mod")
         self.mods_tree.heading("state", text="Installed")
@@ -100,18 +147,20 @@ class ModManagerGui(tk.Tk):
         self.mods_tree.pack(fill="both", expand=True, pady=8)
         actions = ttk.Frame(self.mods_tab)
         actions.pack(fill="x")
-        ttk.Button(actions, text="Prev Page", command=lambda: self._change_mod_page(-1)).pack(side="left")
-        ttk.Button(actions, text="Next Page", command=lambda: self._change_mod_page(1)).pack(side="left", padx=(6, 12))
+        self._button(actions, "Prev Page", lambda: self._change_mod_page(-1)).pack(side="left")
+        self._button(actions, "Next Page", lambda: self._change_mod_page(1)).pack(side="left", padx=(6, 12))
         ttk.Label(actions, text="Page").pack(side="left")
-        ttk.Spinbox(actions, from_=1, to=9999, textvariable=self.mod_page, width=6, command=self.refresh_mods).pack(side="left", padx=(6, 12))
-        ttk.Button(actions, text="Install Page", command=self._install_page).pack(side="left")
-        ttk.Button(actions, text="Uninstall Page", command=self._uninstall_page).pack(side="left", padx=(6, 0))
-        ttk.Button(actions, text="Toggle Selected", command=self._toggle_selected_mods).pack(side="left", padx=(6, 12))
+        mod_page_spin = ttk.Spinbox(actions, from_=1, to=9999, textvariable=self.mod_page, width=6, command=self.refresh_mods)
+        self.action_widgets.append(mod_page_spin)
+        mod_page_spin.pack(side="left", padx=(6, 12))
+        self._button(actions, "Install Page", self._install_page).pack(side="left")
+        self._button(actions, "Uninstall Page", self._uninstall_page).pack(side="left", padx=(6, 0))
+        self._button(actions, "Toggle Selected", self._toggle_selected_mods).pack(side="left", padx=(6, 12))
         ttk.Label(actions, text="Label").pack(side="left")
         self.label_edit_box = AutocompleteCombobox(actions, textvariable=self.label_edit_var, width=18)
         self.label_edit_box.pack(side="left", padx=(6, 6))
-        ttk.Button(actions, text="Add Label", command=self._add_label_selected).pack(side="left")
-        ttk.Button(actions, text="Remove Label", command=self._remove_label_selected).pack(side="left", padx=(6, 0))
+        self._button(actions, "Add Label", self._add_label_selected).pack(side="left")
+        self._button(actions, "Remove Label", self._remove_label_selected).pack(side="left", padx=(6, 0))
 
     def _build_presets(self) -> None:
         top = ttk.Frame(self.presets_tab)
@@ -119,8 +168,8 @@ class ModManagerGui(tk.Tk):
         ttk.Label(top, text="Name").pack(side="left")
         self.preset_name_box = AutocompleteCombobox(top, width=30)
         self.preset_name_box.pack(side="left", padx=(6, 8))
-        ttk.Button(top, text="Save", command=self._save_preset).pack(side="left")
-        ttk.Button(top, text="Refresh", command=self.refresh_presets).pack(side="left", padx=(6, 0))
+        self._button(top, "Save", self._save_preset).pack(side="left")
+        self._button(top, "Refresh", self.refresh_presets).pack(side="left", padx=(6, 0))
         self.presets_tree = ttk.Treeview(self.presets_tab, columns=("state", "mods"), show="tree headings", selectmode="extended")
         self.presets_tree.heading("#0", text="Preset")
         self.presets_tree.heading("state", text="Applied")
@@ -131,12 +180,14 @@ class ModManagerGui(tk.Tk):
         self.presets_tree.pack(fill="both", expand=True, pady=8)
         actions = ttk.Frame(self.presets_tab)
         actions.pack(fill="x")
-        ttk.Button(actions, text="Prev Page", command=lambda: self._change_preset_page(-1)).pack(side="left")
-        ttk.Button(actions, text="Next Page", command=lambda: self._change_preset_page(1)).pack(side="left", padx=(6, 12))
+        self._button(actions, "Prev Page", lambda: self._change_preset_page(-1)).pack(side="left")
+        self._button(actions, "Next Page", lambda: self._change_preset_page(1)).pack(side="left", padx=(6, 12))
         ttk.Label(actions, text="Page").pack(side="left")
-        ttk.Spinbox(actions, from_=1, to=9999, textvariable=self.preset_page, width=6, command=self.refresh_presets).pack(side="left", padx=(6, 12))
-        ttk.Button(actions, text="Toggle Selected", command=self._toggle_selected_presets).pack(side="left")
-        ttk.Button(actions, text="Delete Selected", command=self._delete_selected_presets).pack(side="left", padx=(6, 0))
+        preset_page_spin = ttk.Spinbox(actions, from_=1, to=9999, textvariable=self.preset_page, width=6, command=self.refresh_presets)
+        self.action_widgets.append(preset_page_spin)
+        preset_page_spin.pack(side="left", padx=(6, 12))
+        self._button(actions, "Toggle Selected", self._toggle_selected_presets).pack(side="left")
+        self._button(actions, "Delete Selected", self._delete_selected_presets).pack(side="left", padx=(6, 0))
 
     def _build_settings(self) -> None:
         self.setting_vars: Dict[str, tk.StringVar] = {}
@@ -155,20 +206,20 @@ class ModManagerGui(tk.Tk):
             self.setting_vars[key] = var
             ttk.Entry(self.settings_tab, textvariable=var, width=70).grid(row=row, column=1, sticky="ew", padx=8, pady=4)
             if key in ["game_mods_dir", "mods_source_dir"]:
-                ttk.Button(self.settings_tab, text="Browse", command=lambda k=key: self._browse_setting(k)).grid(row=row, column=2, pady=4)
+                self._button(self.settings_tab, "Browse", lambda k=key: self._browse_setting(k)).grid(row=row, column=2, pady=4)
         self.settings_tab.columnconfigure(1, weight=1)
         buttons = ttk.Frame(self.settings_tab)
         buttons.grid(row=len(rows), column=0, columnspan=3, sticky="w", pady=(12, 0))
-        ttk.Button(buttons, text="Save Settings", command=self._save_settings).pack(side="left")
-        ttk.Button(buttons, text="Open Source Folder", command=lambda: self._open_folder("source")).pack(side="left", padx=(8, 0))
-        ttk.Button(buttons, text="Open Game Folder", command=lambda: self._open_folder("game")).pack(side="left", padx=(8, 0))
+        self._button(buttons, "Save Settings", self._save_settings).pack(side="left")
+        self._button(buttons, "Open Source Folder", lambda: self._open_folder("source")).pack(side="left", padx=(8, 0))
+        self._button(buttons, "Open Game Folder", lambda: self._open_folder("game")).pack(side="left", padx=(8, 0))
 
     def _build_broken(self) -> None:
         top = ttk.Frame(self.broken_tab)
         top.pack(fill="x")
-        ttk.Button(top, text="List", command=self.refresh_broken).pack(side="left")
-        ttk.Button(top, text="Remove Selected", command=self._remove_selected_broken).pack(side="left", padx=(6, 0))
-        ttk.Button(top, text="Remove All", command=self._remove_all_broken).pack(side="left", padx=(6, 0))
+        self._button(top, "List", self.refresh_broken).pack(side="left")
+        self._button(top, "Remove Selected", self._remove_selected_broken).pack(side="left", padx=(6, 0))
+        self._button(top, "Remove All", self._remove_all_broken).pack(side="left", padx=(6, 0))
         self.broken_tree = ttk.Treeview(self.broken_tab, columns=("kind", "source"), show="tree headings", selectmode="extended")
         self.broken_tree.heading("#0", text="Mod")
         self.broken_tree.heading("kind", text="Kind")
@@ -267,23 +318,36 @@ class ModManagerGui(tk.Tk):
 
     def _install_page(self) -> None:
         page, label, search, order = self._view_args()
-        page, total, err = apply_mods_page(self.cfg, page, label, search, order)
-        self.status_var.set(f"Installed {total - err}/{total} on page {page}. Errors: {err}.")
-        self.refresh_mods()
-        self.refresh_presets()
+
+        def done(result) -> None:
+            page, total, err = result
+            self.status_var.set(f"Installed {total - err}/{total} on page {page}. Errors: {err}.")
+            self.refresh_mods()
+            self.refresh_presets()
+
+        self._run_action("Installing page", lambda: apply_mods_page(self.cfg, page, label, search, order), done)
 
     def _uninstall_page(self) -> None:
         page, label, search, order = self._view_args()
-        page, count = deactivate_mods_page(self.cfg, page, label, search, order)
-        self.status_var.set(f"Uninstalled {count} on page {page}.")
-        self.refresh_mods()
-        self.refresh_presets()
+
+        def done(result) -> None:
+            page, count = result
+            self.status_var.set(f"Uninstalled {count} on page {page}.")
+            self.refresh_mods()
+            self.refresh_presets()
+
+        self._run_action("Uninstalling page", lambda: deactivate_mods_page(self.cfg, page, label, search, order), done)
 
     def _toggle_selected_mods(self) -> None:
-        msg = toggle_mods_by_indexes(self.current_mods_shown, self._selected_indexes(self.mods_tree))
-        self.status_var.set(msg or "No mods selected.")
-        self.refresh_mods()
-        self.refresh_presets()
+        shown = list(self.current_mods_shown)
+        indexes = self._selected_indexes(self.mods_tree)
+
+        def done(msg) -> None:
+            self.status_var.set(msg or "No mods selected.")
+            self.refresh_mods()
+            self.refresh_presets()
+
+        self._run_action("Toggling selected mods", lambda: toggle_mods_by_indexes(shown, indexes), done)
 
     def _add_label_selected(self) -> None:
         label = self.label_edit_var.get().strip()
@@ -291,8 +355,12 @@ class ModManagerGui(tk.Tk):
             messagebox.showerror("Label", "Enter label.")
             return
         targets = [self.current_mods_shown[i - 1].name for i in self._selected_indexes(self.mods_tree) if 1 <= i <= len(self.current_mods_shown)]
-        self.status_var.set(add_label_to_mods(label, targets) if targets else "No mods selected.")
-        self.refresh_mods()
+
+        def done(msg) -> None:
+            self.status_var.set(msg)
+            self.refresh_mods()
+
+        self._run_action("Adding label", lambda: add_label_to_mods(label, targets) if targets else "No mods selected.", done)
 
     def _remove_label_selected(self) -> None:
         label = self.label_edit_var.get().strip()
@@ -300,34 +368,53 @@ class ModManagerGui(tk.Tk):
             messagebox.showerror("Label", "Enter label.")
             return
         targets = [self.current_mods_shown[i - 1].name for i in self._selected_indexes(self.mods_tree) if 1 <= i <= len(self.current_mods_shown)]
-        self.status_var.set(remove_label_from_mods(label, targets) if targets else "No mods selected.")
-        self.refresh_mods()
+
+        def done(msg) -> None:
+            self.status_var.set(msg)
+            self.refresh_mods()
+
+        self._run_action("Removing label", lambda: remove_label_from_mods(label, targets) if targets else "No mods selected.", done)
 
     def _save_preset(self) -> None:
         name = self.preset_name_box.get().strip()
         if not name:
             messagebox.showerror("Preset", "Enter preset name.")
             return
-        ok, msg = save_preset_from_installed(self.cfg, name)
-        self.status_var.set(msg)
-        self.refresh_presets()
+        def done(result) -> None:
+            _ok, msg = result
+            self.status_var.set(msg)
+            self.refresh_presets()
+
+        self._run_action("Saving preset", lambda: save_preset_from_installed(self.cfg, name), done)
 
     def _toggle_selected_presets(self) -> None:
         if not self.search_var.get().strip() and not self.label_filter_var.get().strip() and self.current_mod_items:
             installed = {m.name for m in self.current_mod_items if m.installed}
         else:
             installed = {m.name for m in mods_view(self.cfg, 1, "", "", "d")[0] if m.installed}
-        msg, messages, has_errors = toggle_presets_by_indexes(self.cfg, int(self.preset_page.get() or 1), self._selected_indexes(self.presets_tree), installed)
-        self.status_var.set(msg or "No presets selected.")
-        if has_errors:
-            messagebox.showwarning("Preset", "\n".join(messages))
-        self.refresh_mods()
-        self.refresh_presets()
+        page = int(self.preset_page.get() or 1)
+        indexes = self._selected_indexes(self.presets_tree)
+
+        def done(result) -> None:
+            msg, messages, has_errors = result
+            self.status_var.set(msg or "No presets selected.")
+            if has_errors:
+                messagebox.showwarning("Preset", "\n".join(messages))
+            self.refresh_mods()
+            self.refresh_presets()
+
+        self._run_action("Toggling selected presets", lambda: toggle_presets_by_indexes(self.cfg, page, indexes, installed), done)
 
     def _delete_selected_presets(self) -> None:
-        count, missing = delete_presets_by_indexes(self.cfg, int(self.preset_page.get() or 1), self._selected_indexes(self.presets_tree))
-        self.status_var.set(f"Deleted: {count}. Missing: {', '.join(missing) if missing else 'none'}")
-        self.refresh_presets()
+        page = int(self.preset_page.get() or 1)
+        indexes = self._selected_indexes(self.presets_tree)
+
+        def done(result) -> None:
+            count, missing = result
+            self.status_var.set(f"Deleted: {count}. Missing: {', '.join(missing) if missing else 'none'}")
+            self.refresh_presets()
+
+        self._run_action("Deleting presets", lambda: delete_presets_by_indexes(self.cfg, page, indexes), done)
 
     def _browse_setting(self, key: str) -> None:
         path = filedialog.askdirectory()
@@ -335,34 +422,60 @@ class ModManagerGui(tk.Tk):
             self.setting_vars[key].set(path)
 
     def _save_settings(self) -> None:
-        for key, var in self.setting_vars.items():
-            value = var.get().strip()
-            if key in ["page_size", "max_mod_name_len", "max_preset_name_len", "max_label_name_len"]:
-                if value.isdigit():
-                    self.cfg[key] = int(value)
-            else:
-                self.cfg[key] = value
-        save_config(self.cfg)
-        self.status_var.set("Settings saved.")
-        self.refresh_all()
+        values = {key: var.get().strip() for key, var in self.setting_vars.items()}
+
+        def worker():
+            for key, value in values.items():
+                if key in ["page_size", "max_mod_name_len", "max_preset_name_len", "max_label_name_len"]:
+                    if value.isdigit():
+                        self.cfg[key] = int(value)
+                else:
+                    self.cfg[key] = value
+            save_config(self.cfg)
+            return "Settings saved."
+
+        def done(msg) -> None:
+            self.status_var.set(msg)
+            self.refresh_all()
+
+        self._run_action("Saving settings", worker, done)
 
     def _open_folder(self, target: str) -> None:
         key = "mods_source_dir" if target == "source" else "game_mods_dir"
-        ok, msg = open_folder(self.cfg.get(key, ""))
-        self.status_var.set(f"Open {target} folder: {'OK' if ok else 'ERR'} - {msg}")
+
+        def done(result) -> None:
+            ok, msg = result
+            self.status_var.set(f"Open {target} folder: {'OK' if ok else 'ERR'} - {msg}")
+
+        self._run_action(f"Opening {target} folder", lambda: open_folder(self.cfg.get(key, "")), done)
 
     def _remove_selected_broken(self) -> None:
         targets = [self.current_broken[i - 1] for i in self._selected_indexes(self.broken_tree) if 1 <= i <= len(self.current_broken)]
-        for mod in targets:
-            deactivate_mod(mod)
-        self.status_var.set(f"Removed broken links: {len(targets)}")
-        self.refresh_broken()
+
+        def worker() -> int:
+            for mod in targets:
+                deactivate_mod(mod)
+            return len(targets)
+
+        def done(count) -> None:
+            self.status_var.set(f"Removed broken links: {count}")
+            self.refresh_broken()
+
+        self._run_action("Removing broken links", worker, done)
 
     def _remove_all_broken(self) -> None:
-        for mod in self.current_broken:
-            deactivate_mod(mod)
-        self.status_var.set(f"Removed broken links: {len(self.current_broken)}")
-        self.refresh_broken()
+        targets = list(self.current_broken)
+
+        def worker() -> int:
+            for mod in targets:
+                deactivate_mod(mod)
+            return len(targets)
+
+        def done(count) -> None:
+            self.status_var.set(f"Removed broken links: {count}")
+            self.refresh_broken()
+
+        self._run_action("Removing all broken links", worker, done)
 
 def run_gui() -> int:
     app = ModManagerGui()
