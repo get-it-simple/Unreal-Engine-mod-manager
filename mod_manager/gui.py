@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import tkinter as tk
 import tkinter.font as tkfont
+from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Callable, Dict, List
 
@@ -93,7 +94,7 @@ class ModManagerGui(tk.Tk):
         self.current_mods_shown = []
         self.current_mod_labels = {}
         self.current_broken = []
-        self.drop_target = None
+        self.drop_targets = []
         self.busy = False
         self.action_widgets = []
         self.mod_sort_key = "d"
@@ -103,6 +104,8 @@ class ModManagerGui(tk.Tk):
         self.button_scale_values = ["25%", "50%", "75%", "100%", "125%", "150%", "175%", "200%"]
         self._apply_gui_style()
         self._build()
+        self.drop_targets.append(WindowsDropTarget(self, self._handle_mods_drop))
+        self.drop_targets.append(WindowsDropTarget(self.mods_tree, self._handle_mods_drop))
         self.refresh_all()
 
     def _button_scale(self) -> float:
@@ -132,6 +135,7 @@ class ModManagerGui(tk.Tk):
         style.configure("TSpinbox", padding=(int(6 * scale), int(5 * scale)))
         style.configure("TCombobox", padding=(int(4 * scale), int(3 * scale)))
         style.configure("Treeview", rowheight=max(30, int(34 * scale)))
+        style.configure("Mods.Treeview", rowheight=max(30, int(34 * scale)))
 
     def _apply_button_widths(self) -> None:
         for widget in self.action_widgets:
@@ -223,7 +227,7 @@ class ModManagerGui(tk.Tk):
         top.add(self._button(top, "List", self.refresh_mods))
         top.add(self._button(top, "Search", self._mods_search), padx=(6, 0))
         top.add(self._button(top, "Clear", self._mods_clear), padx=(6, 0))
-        self.mods_tree = ttk.Treeview(self.mods_tab, columns=("name", "state", "label", "last"), show="tree headings", selectmode="extended")
+        self.mods_tree = ttk.Treeview(self.mods_tab, columns=("name", "state", "label", "last"), show="tree headings", selectmode="extended", style="Mods.Treeview")
         self.mods_tree.heading("#0", text="Image")
         self.mods_tree.heading("name", text="Mod", command=lambda: self._sort_mods("name"))
         self.mods_tree.heading("state", text="Installed", command=lambda: self._sort_mods("installed"))
@@ -236,7 +240,6 @@ class ModManagerGui(tk.Tk):
         self.mods_tree.column("last", width=160)
         self.mods_tree.bind("<ButtonRelease-1>", self._save_placeholder_width)
         self.mods_tree.pack(fill="both", expand=True, pady=8)
-        self.drop_target = WindowsDropTarget(self.mods_tree, self._handle_mods_drop)
         actions = WrapFrame(self.mods_tab)
         actions.pack(fill="x")
         actions.add(self._button(actions, "Prev Page", lambda: self._change_mod_page(-1)))
@@ -248,6 +251,9 @@ class ModManagerGui(tk.Tk):
         actions.add(self._button(actions, "Install Page", self._install_page))
         actions.add(self._button(actions, "Uninstall Page", self._uninstall_page), padx=(6, 0))
         actions.add(self._button(actions, "Toggle Selected", self._toggle_selected_mods), padx=(6, 12))
+        actions.add(self._button(actions, "Import Mods", self._import_mod_files), padx=(6, 0))
+        actions.add(self._button(actions, "Import Folder", self._import_mod_folder), padx=(6, 0))
+        actions.add(self._button(actions, "Set Image", self._set_mod_image), padx=(6, 12))
         actions.add(ttk.Label(actions, text="Label"))
         self.label_edit_box = AutocompleteCombobox(actions, textvariable=self.label_edit_var, width=18)
         actions.add(self.label_edit_box, padx=(6, 6))
@@ -367,26 +373,54 @@ class ModManagerGui(tk.Tk):
         if width != int(self.cfg.get("placeholder_image_col_width", 56)):
             self.cfg["placeholder_image_col_width"] = width
             save_config(self.cfg)
+            self.placeholder_images.clear()
+            self.refresh_mods()
+
+    def _image_width(self) -> int:
+        return max(16, int(self.mods_tree.column("#0", "width")) - 8)
+
+    def _pixel_hex(self, color) -> str:
+        if isinstance(color, tuple):
+            return "#%02x%02x%02x" % color[:3]
+        return str(color)
+
+    def _resize_image(self, source: tk.PhotoImage, width: int) -> tk.PhotoImage:
+        source_w = max(1, source.width())
+        source_h = max(1, source.height())
+        height = max(1, int(source_h * width / source_w))
+        if source_w == width and source_h == height:
+            return source
+        img = tk.PhotoImage(width=width, height=height)
+        rows = []
+        for y in range(height):
+            source_y = min(source_h - 1, int(y * source_h / height))
+            colors = []
+            for x in range(width):
+                source_x = min(source_w - 1, int(x * source_w / width))
+                colors.append(self._pixel_hex(source.get(source_x, source_y)))
+            rows.append("{" + " ".join(colors) + "}")
+        img.put(" ".join(rows))
+        return img
 
     def _placeholder(self, name: str) -> tk.PhotoImage:
-        if name in self.placeholder_images:
-            return self.placeholder_images[name]
+        width = self._image_width()
+        key = f"{name}:{width}"
+        if key in self.placeholder_images:
+            return self.placeholder_images[key]
         path = mod_image_path(self.cfg, name)
         img = None
         if path:
             try:
-                img = tk.PhotoImage(file=str(path))
-                factor = max(1, (max(img.width(), 1) + 39) // 40, (max(img.height(), 1) + 27) // 28)
-                if factor > 1:
-                    img = img.subsample(factor, factor)
+                img = self._resize_image(tk.PhotoImage(file=str(path)), width)
             except tk.TclError:
                 img = None
         if img is None:
-            img = tk.PhotoImage(width=40, height=28)
+            height = max(28, int(width * 0.65))
+            img = tk.PhotoImage(width=width, height=height)
             colors = ["#d9e8fb", "#e4f4de", "#f7e6d0", "#eadff7", "#f7dfe8"]
             color = colors[sum(ord(c) for c in name) % len(colors)]
-            img.put(color, to=(0, 0, 40, 28))
-        self.placeholder_images[name] = img
+            img.put(color, to=(0, 0, width, height))
+        self.placeholder_images[key] = img
         return img
 
     def _handle_mods_drop(self, paths, x: int, y: int) -> None:
@@ -395,18 +429,21 @@ class ModManagerGui(tk.Tk):
         image_paths = [p for p in paths if is_image_file(p)]
         mod_paths = [p for p in paths if is_mod_file(p, self.cfg)]
         tasks = []
-        row = self.mods_tree.identify_row(y)
+        tree_x = x - self.mods_tree.winfo_rootx()
+        tree_y = y - self.mods_tree.winfo_rooty()
+        row = self.mods_tree.identify_row(tree_y) if 0 <= tree_x <= self.mods_tree.winfo_width() and 0 <= tree_y <= self.mods_tree.winfo_height() else ""
         if image_paths:
-            if not row or not row.isdigit():
-                messagebox.showwarning("Image", "Drop image on a mod row.")
-            else:
+            default_name = ""
+            if row and row.isdigit():
                 index = int(row)
                 if 1 <= index <= len(self.current_mods_shown):
-                    mod_name = self.current_mods_shown[index - 1].name
-                    for path in image_paths:
-                        tasks.append(("image", path, mod_name, True))
+                    default_name = self.current_mods_shown[index - 1].name
+            mod_name = self._choose_mod_for_image(default_name)
+            if mod_name:
+                for path in image_paths:
+                    tasks.append(("image", path, mod_name, True))
         for path in mod_paths:
-            dst_exists = ((self.cfg.get("mods_source_dir") or "") and (self.current_mod_items is not None) and any(m.name == path.name for m in self.current_mod_items))
+            dst_exists = ((self.cfg.get("mods_source_dir") or "") and any(m.name == path.name for m in self.current_mod_items))
             replace = True
             if dst_exists:
                 replace = messagebox.askyesno("Replace mod", f"Replace existing mod '{path.name}'?")
@@ -435,6 +472,113 @@ class ModManagerGui(tk.Tk):
 
         self._run_action("Importing dropped files", worker, done)
 
+    def _import_paths(self, paths: List[Path]) -> None:
+        if self.busy or not ensure_paths(self.cfg):
+            return
+        tasks = []
+        for path in paths:
+            if not is_mod_file(path, self.cfg):
+                continue
+            exists = any(m.name == path.name for m in self.current_mod_items)
+            replace = True
+            if exists:
+                replace = messagebox.askyesno("Replace mod", f"Replace existing mod '{path.name}'?")
+            if replace:
+                tasks.append((path, exists))
+        if not tasks:
+            self.status_var.set("No supported mod files.")
+            return
+
+        def worker():
+            imported = []
+            skipped = []
+            for path, replace in tasks:
+                ok, msg = import_mod_file(self.cfg, path, replace)
+                (imported if ok else skipped).append(msg)
+            return imported, skipped
+
+        def done(result) -> None:
+            imported, skipped = result
+            self.status_var.set(f"Imported: {len(imported)}. Skipped: {len(skipped)}.")
+            self.refresh_mods()
+
+        self._run_action("Importing mods", worker, done)
+
+    def _import_mod_files(self) -> None:
+        paths = filedialog.askopenfilenames(title="Import mods")
+        if paths:
+            self._import_paths([Path(p) for p in paths])
+
+    def _import_mod_folder(self) -> None:
+        path = filedialog.askdirectory(title="Import mod folder")
+        if path:
+            self._import_paths([Path(path)])
+
+    def _set_mod_image(self) -> None:
+        if self.busy or not ensure_paths(self.cfg):
+            return
+        indexes = self._selected_indexes(self.mods_tree)
+        default_name = ""
+        if indexes and 1 <= indexes[0] <= len(self.current_mods_shown):
+            default_name = self.current_mods_shown[indexes[0] - 1].name
+        mod_name = self._choose_mod_for_image(default_name)
+        if not mod_name:
+            return
+        path = filedialog.askopenfilename(title="Select image")
+        if not path:
+            return
+        image = Path(path)
+        if not is_image_file(image):
+            messagebox.showwarning("Image", "Unsupported image file.")
+            return
+
+        def done(result) -> None:
+            ok, msg = result
+            self.placeholder_images.clear()
+            self.status_var.set(f"Image {'saved' if ok else 'skipped'}: {msg}")
+            self.refresh_mods()
+
+        self._run_action("Saving image", lambda: import_mod_image(self.cfg, mod_name, image), done)
+
+    def _choose_mod_for_image(self, default_name: str = "") -> str:
+        names = [m.name for m in self.current_mod_items]
+        if not names:
+            messagebox.showwarning("Image", "No mods available.")
+            return ""
+        result = {"name": ""}
+        dialog = tk.Toplevel(self)
+        dialog.title("Select mod")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+        dialog.columnconfigure(0, weight=1)
+        ttk.Label(dialog, text="Mod").grid(row=0, column=0, sticky="w", padx=12, pady=(12, 4))
+        var = tk.StringVar(value=default_name or names[0])
+        box = AutocompleteCombobox(dialog, textvariable=var, width=52)
+        box.set_completion_values(names)
+        box.grid(row=1, column=0, columnspan=2, sticky="ew", padx=12, pady=4)
+
+        def ok() -> None:
+            value = var.get().strip()
+            if value in names:
+                result["name"] = value
+                dialog.destroy()
+            else:
+                messagebox.showwarning("Image", "Select mod from list.", parent=dialog)
+
+        def cancel() -> None:
+            dialog.destroy()
+
+        buttons = ttk.Frame(dialog)
+        buttons.grid(row=2, column=0, columnspan=2, sticky="e", padx=12, pady=(8, 12))
+        ttk.Button(buttons, text="OK", command=ok).pack(side="left", padx=(0, 8))
+        ttk.Button(buttons, text="Cancel", command=cancel).pack(side="left")
+        dialog.bind("<Return>", lambda _event: ok())
+        dialog.bind("<Escape>", lambda _event: cancel())
+        box.focus_set()
+        dialog.wait_window()
+        return result["name"]
+
     def refresh_all(self) -> None:
         self.refresh_mods()
         self.refresh_presets()
@@ -452,11 +596,15 @@ class ModManagerGui(tk.Tk):
         self.current_mod_labels = labels
         self.mod_page.set(page)
         self.mods_tree.delete(*self.mods_tree.get_children())
+        row_height = max(30, int(34 * self._button_scale()))
         for i, mod in enumerate(shown, 1):
             mark = "Yes" if mod.installed else "No"
             rec = records.get(mod.name, {})
             last_managed = rec.get("last_managed") or "-"
-            self.mods_tree.insert("", "end", iid=str(i), text="", image=self._placeholder(mod.name), values=(mod.name, mark, labels.get(mod.name, "-"), last_managed))
+            image = self._placeholder(mod.name)
+            row_height = max(row_height, image.height() + 6)
+            self.mods_tree.insert("", "end", iid=str(i), text="", image=image, values=(mod.name, mark, labels.get(mod.name, "-"), last_managed))
+        ttk.Style(self).configure("Mods.Treeview", rowheight=row_height)
         if selected_names:
             selected = [str(i) for i, mod in enumerate(shown, 1) if mod.name in selected_names]
             if selected:

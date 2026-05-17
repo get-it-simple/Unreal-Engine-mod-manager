@@ -20,6 +20,8 @@ def parse_extensions(cfg: Dict) -> Tuple[bool, List[str]]:
     return False, exts
 
 def is_mod_file(path: Path, cfg: Dict) -> bool:
+    if path.is_dir():
+        return path.name != "images"
     if not path.is_file() or is_image_file(path):
         return False
     show_all, exts = parse_extensions(cfg)
@@ -71,7 +73,12 @@ def import_mod_file(cfg: Dict, src: Path, replace: bool = False) -> Tuple[bool, 
     if src.resolve() == dst.resolve():
         ensure_mod_records([dst.name])
         return True, dst.name
-    shutil.copy2(src, dst)
+    if src.is_dir():
+        if dst.exists():
+            shutil.rmtree(dst)
+        shutil.copytree(src, dst)
+    else:
+        shutil.copy2(src, dst)
     ensure_mod_records([dst.name])
     return True, dst.name
 
