@@ -239,9 +239,9 @@ class ModManagerGui(tk.Tk):
         self.mods_tree.column("label", width=160)
         self.mods_tree.column("last", width=160)
         self.mods_tree.bind("<ButtonRelease-1>", self._save_placeholder_width)
-        self.mods_tree.pack(fill="both", expand=True, pady=8)
         actions = WrapFrame(self.mods_tab)
-        actions.pack(fill="x")
+        actions.pack(fill="x", side="bottom")
+        self.mods_tree.pack(fill="both", expand=True, pady=8)
         actions.add(self._button(actions, "Prev Page", lambda: self._change_mod_page(-1)))
         actions.add(self._button(actions, "Next Page", lambda: self._change_mod_page(1)), padx=(6, 12))
         actions.add(ttk.Label(actions, text="Page"))
@@ -377,7 +377,7 @@ class ModManagerGui(tk.Tk):
             self.refresh_mods()
 
     def _image_width(self) -> int:
-        return max(16, int(self.mods_tree.column("#0", "width")) - 8)
+        return max(16, int(self.mods_tree.column("#0", "width")) - 20)
 
     def _pixel_hex(self, color) -> str:
         if isinstance(color, tuple):
@@ -411,7 +411,12 @@ class ModManagerGui(tk.Tk):
         img = None
         if path:
             try:
-                img = self._resize_image(tk.PhotoImage(file=str(path)), width)
+                raw = tk.PhotoImage(file=str(path))
+                max_h = max(28, int(width * 0.65))
+                src_w = max(1, raw.width())
+                src_h = max(1, raw.height())
+                fit_w = min(width, max(1, int(src_w * max_h / src_h)))
+                img = self._resize_image(raw, fit_w)
             except tk.TclError:
                 img = None
         if img is None:
@@ -595,16 +600,16 @@ class ModManagerGui(tk.Tk):
         self.current_mods_shown = shown
         self.current_mod_labels = labels
         self.mod_page.set(page)
-        self.mods_tree.delete(*self.mods_tree.get_children())
         row_height = max(30, int(34 * self._button_scale()))
+        row_height = max(row_height, max(28, int(self._image_width() * 0.65)) + 6)
+        ttk.Style(self).configure("Mods.Treeview", rowheight=row_height)
+        self.mods_tree.delete(*self.mods_tree.get_children())
         for i, mod in enumerate(shown, 1):
             mark = "Yes" if mod.installed else "No"
             rec = records.get(mod.name, {})
             last_managed = rec.get("last_managed") or "-"
             image = self._placeholder(mod.name)
-            row_height = max(row_height, image.height() + 6)
             self.mods_tree.insert("", "end", iid=str(i), text="", image=image, values=(mod.name, mark, labels.get(mod.name, "-"), last_managed))
-        ttk.Style(self).configure("Mods.Treeview", rowheight=row_height)
         if selected_names:
             selected = [str(i) for i, mod in enumerate(shown, 1) if mod.name in selected_names]
             if selected:
