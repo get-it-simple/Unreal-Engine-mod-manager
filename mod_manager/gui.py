@@ -37,6 +37,37 @@ class AutocompleteCombobox(ttk.Combobox):
         text = self.get().lower()
         self["values"] = [v for v in self._all_values if text in v.lower()] if text else self._all_values
 
+class WrapFrame(ttk.Frame):
+    def __init__(self, master, **kwargs):
+        super().__init__(master, **kwargs)
+        self.items = []
+        self.bind("<Configure>", lambda _event: self.after_idle(self._arrange))
+
+    def add(self, widget, padx=0, pady=3, sticky="w") -> None:
+        self.items.append((widget, padx, pady, sticky))
+        self.after_idle(self._arrange)
+
+    def _pad_width(self, padx) -> int:
+        if isinstance(padx, tuple):
+            return int(padx[0]) + int(padx[1])
+        return int(padx) * 2
+
+    def _arrange(self) -> None:
+        width = max(1, self.winfo_width())
+        row = 0
+        col = 0
+        used = 0
+        for widget, padx, pady, sticky in self.items:
+            widget.grid_forget()
+            need = widget.winfo_reqwidth() + self._pad_width(padx)
+            if col > 0 and used + need > width:
+                row += 1
+                col = 0
+                used = 0
+            widget.grid(row=row, column=col, sticky=sticky, padx=padx, pady=pady)
+            used += need
+            col += 1
+
 class ModManagerGui(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -101,6 +132,8 @@ class ModManagerGui(tk.Tk):
                 text = str(widget.cget("text"))
                 if text:
                     widget.configure(width=max(int(14 * self._button_scale()), len(text) + 2))
+                    if isinstance(widget.master, WrapFrame):
+                        widget.master.after_idle(widget.master._arrange)
             except tk.TclError:
                 pass
 
@@ -170,19 +203,19 @@ class ModManagerGui(tk.Tk):
             self._set_busy(False)
 
     def _build_mods(self) -> None:
-        top = ttk.Frame(self.mods_tab)
+        top = WrapFrame(self.mods_tab)
         top.pack(fill="x")
-        ttk.Label(top, text="Search").pack(side="left")
+        top.add(ttk.Label(top, text="Search"))
         self.search_box = AutocompleteCombobox(top, textvariable=self.search_var, width=24)
-        self.search_box.pack(side="left", padx=(6, 12))
-        ttk.Label(top, text="Label").pack(side="left")
+        top.add(self.search_box, padx=(6, 12))
+        top.add(ttk.Label(top, text="Label"))
         self.label_filter_box = AutocompleteCombobox(top, textvariable=self.label_filter_var, width=18)
-        self.label_filter_box.pack(side="left", padx=(6, 12))
-        ttk.Label(top, text="Order").pack(side="left")
-        ttk.Combobox(top, textvariable=self.order_var, values=["d", "cd"], width=6, state="readonly").pack(side="left", padx=(6, 12))
-        self._button(top, "List", self.refresh_mods).pack(side="left")
-        self._button(top, "Search", self._mods_search).pack(side="left", padx=(6, 0))
-        self._button(top, "Clear", self._mods_clear).pack(side="left", padx=(6, 0))
+        top.add(self.label_filter_box, padx=(6, 12))
+        top.add(ttk.Label(top, text="Order"))
+        top.add(ttk.Combobox(top, textvariable=self.order_var, values=["d", "cd"], width=6, state="readonly"), padx=(6, 12))
+        top.add(self._button(top, "List", self.refresh_mods))
+        top.add(self._button(top, "Search", self._mods_search), padx=(6, 0))
+        top.add(self._button(top, "Clear", self._mods_clear), padx=(6, 0))
         self.mods_tree = ttk.Treeview(self.mods_tab, columns=("name", "state", "label", "last"), show="tree headings", selectmode="extended")
         self.mods_tree.heading("#0", text="Image")
         self.mods_tree.heading("name", text="Mod", command=lambda: self._sort_mods("name"))
@@ -196,31 +229,31 @@ class ModManagerGui(tk.Tk):
         self.mods_tree.column("last", width=160)
         self.mods_tree.bind("<ButtonRelease-1>", self._save_placeholder_width)
         self.mods_tree.pack(fill="both", expand=True, pady=8)
-        actions = ttk.Frame(self.mods_tab)
+        actions = WrapFrame(self.mods_tab)
         actions.pack(fill="x")
-        self._button(actions, "Prev Page", lambda: self._change_mod_page(-1)).pack(side="left")
-        self._button(actions, "Next Page", lambda: self._change_mod_page(1)).pack(side="left", padx=(6, 12))
-        ttk.Label(actions, text="Page").pack(side="left")
+        actions.add(self._button(actions, "Prev Page", lambda: self._change_mod_page(-1)))
+        actions.add(self._button(actions, "Next Page", lambda: self._change_mod_page(1)), padx=(6, 12))
+        actions.add(ttk.Label(actions, text="Page"))
         mod_page_spin = ttk.Spinbox(actions, from_=1, to=9999, textvariable=self.mod_page, width=6, command=self.refresh_mods)
         self.action_widgets.append(mod_page_spin)
-        mod_page_spin.pack(side="left", padx=(6, 12))
-        self._button(actions, "Install Page", self._install_page).pack(side="left")
-        self._button(actions, "Uninstall Page", self._uninstall_page).pack(side="left", padx=(6, 0))
-        self._button(actions, "Toggle Selected", self._toggle_selected_mods).pack(side="left", padx=(6, 12))
-        ttk.Label(actions, text="Label").pack(side="left")
+        actions.add(mod_page_spin, padx=(6, 12))
+        actions.add(self._button(actions, "Install Page", self._install_page))
+        actions.add(self._button(actions, "Uninstall Page", self._uninstall_page), padx=(6, 0))
+        actions.add(self._button(actions, "Toggle Selected", self._toggle_selected_mods), padx=(6, 12))
+        actions.add(ttk.Label(actions, text="Label"))
         self.label_edit_box = AutocompleteCombobox(actions, textvariable=self.label_edit_var, width=18)
-        self.label_edit_box.pack(side="left", padx=(6, 6))
-        self._button(actions, "Add Label", self._add_label_selected).pack(side="left")
-        self._button(actions, "Remove Label", self._remove_label_selected).pack(side="left", padx=(6, 0))
+        actions.add(self.label_edit_box, padx=(6, 6))
+        actions.add(self._button(actions, "Add Label", self._add_label_selected))
+        actions.add(self._button(actions, "Remove Label", self._remove_label_selected), padx=(6, 0))
 
     def _build_presets(self) -> None:
-        top = ttk.Frame(self.presets_tab)
+        top = WrapFrame(self.presets_tab)
         top.pack(fill="x")
-        ttk.Label(top, text="Name").pack(side="left")
+        top.add(ttk.Label(top, text="Name"))
         self.preset_name_box = AutocompleteCombobox(top, width=30)
-        self.preset_name_box.pack(side="left", padx=(6, 8))
-        self._button(top, "Save", self._save_preset).pack(side="left")
-        self._button(top, "Refresh", self.refresh_presets).pack(side="left", padx=(6, 0))
+        top.add(self.preset_name_box, padx=(6, 8))
+        top.add(self._button(top, "Save", self._save_preset))
+        top.add(self._button(top, "Refresh", self.refresh_presets), padx=(6, 0))
         self.presets_tree = ttk.Treeview(self.presets_tab, columns=("state", "mods", "last"), show="tree headings", selectmode="extended")
         self.presets_tree.heading("#0", text="Preset", command=lambda: self._sort_presets("name"))
         self.presets_tree.heading("state", text="State", command=lambda: self._sort_presets("state"))
@@ -231,16 +264,16 @@ class ModManagerGui(tk.Tk):
         self.presets_tree.column("mods", width=90, anchor="center")
         self.presets_tree.column("last", width=170)
         self.presets_tree.pack(fill="both", expand=True, pady=8)
-        actions = ttk.Frame(self.presets_tab)
+        actions = WrapFrame(self.presets_tab)
         actions.pack(fill="x")
-        self._button(actions, "Prev Page", lambda: self._change_preset_page(-1)).pack(side="left")
-        self._button(actions, "Next Page", lambda: self._change_preset_page(1)).pack(side="left", padx=(6, 12))
-        ttk.Label(actions, text="Page").pack(side="left")
+        actions.add(self._button(actions, "Prev Page", lambda: self._change_preset_page(-1)))
+        actions.add(self._button(actions, "Next Page", lambda: self._change_preset_page(1)), padx=(6, 12))
+        actions.add(ttk.Label(actions, text="Page"))
         preset_page_spin = ttk.Spinbox(actions, from_=1, to=9999, textvariable=self.preset_page, width=6, command=self.refresh_presets)
         self.action_widgets.append(preset_page_spin)
-        preset_page_spin.pack(side="left", padx=(6, 12))
-        self._button(actions, "Toggle Selected", self._toggle_selected_presets).pack(side="left")
-        self._button(actions, "Delete Selected", self._delete_selected_presets).pack(side="left", padx=(6, 0))
+        actions.add(preset_page_spin, padx=(6, 12))
+        actions.add(self._button(actions, "Toggle Selected", self._toggle_selected_presets))
+        actions.add(self._button(actions, "Delete Selected", self._delete_selected_presets), padx=(6, 0))
 
     def _build_settings(self) -> None:
         self.setting_vars: Dict[str, tk.StringVar] = {}
@@ -271,18 +304,18 @@ class ModManagerGui(tk.Tk):
             if key in ["game_mods_dir", "mods_source_dir"]:
                 self._button(self.settings_tab, "Browse", lambda k=key: self._browse_setting(k)).grid(row=row, column=2, pady=4)
         self.settings_tab.columnconfigure(1, weight=1)
-        buttons = ttk.Frame(self.settings_tab)
-        buttons.grid(row=len(rows), column=0, columnspan=3, sticky="w", pady=(12, 0))
-        self._button(buttons, "Save Settings", self._save_settings).pack(side="left")
-        self._button(buttons, "Open Source Folder", lambda: self._open_folder("source")).pack(side="left", padx=(8, 0))
-        self._button(buttons, "Open Game Folder", lambda: self._open_folder("game")).pack(side="left", padx=(8, 0))
+        buttons = WrapFrame(self.settings_tab)
+        buttons.grid(row=len(rows), column=0, columnspan=3, sticky="ew", pady=(12, 0))
+        buttons.add(self._button(buttons, "Save Settings", self._save_settings))
+        buttons.add(self._button(buttons, "Open Source Folder", lambda: self._open_folder("source")), padx=(8, 0))
+        buttons.add(self._button(buttons, "Open Game Folder", lambda: self._open_folder("game")), padx=(8, 0))
 
     def _build_broken(self) -> None:
-        top = ttk.Frame(self.broken_tab)
+        top = WrapFrame(self.broken_tab)
         top.pack(fill="x")
-        self._button(top, "List", self.refresh_broken).pack(side="left")
-        self._button(top, "Remove Selected", self._remove_selected_broken).pack(side="left", padx=(6, 0))
-        self._button(top, "Remove All", self._remove_all_broken).pack(side="left", padx=(6, 0))
+        top.add(self._button(top, "List", self.refresh_broken))
+        top.add(self._button(top, "Remove Selected", self._remove_selected_broken), padx=(6, 0))
+        top.add(self._button(top, "Remove All", self._remove_all_broken), padx=(6, 0))
         self.broken_tree = ttk.Treeview(self.broken_tab, columns=("kind", "source"), show="tree headings", selectmode="extended")
         self.broken_tree.heading("#0", text="Mod")
         self.broken_tree.heading("kind", text="Kind")
