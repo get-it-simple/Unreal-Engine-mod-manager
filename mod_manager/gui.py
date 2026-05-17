@@ -247,7 +247,7 @@ class ModManagerGui(tk.Tk):
         self.refresh_presets()
         self.refresh_broken()
 
-    def refresh_mods(self) -> None:
+    def refresh_mods(self, selected_names: List[str] | None = None) -> None:
         if not ensure_paths(self.cfg):
             self.status_var.set("Configure folders first.")
             return
@@ -261,6 +261,12 @@ class ModManagerGui(tk.Tk):
         for i, mod in enumerate(shown, 1):
             mark = "Yes" if mod.installed else "No"
             self.mods_tree.insert("", "end", iid=str(i), text=mod.name, image=self._placeholder(mod.name), values=(mark, labels.get(mod.name, "-")))
+        if selected_names:
+            selected = [str(i) for i, mod in enumerate(shown, 1) if mod.name in selected_names]
+            if selected:
+                self.mods_tree.selection_set(selected)
+                self.mods_tree.focus(selected[0])
+                self.mods_tree.see(selected[0])
         self.search_box.set_completion_values([m.name for m in items])
         label_values = sorted({v for v in labels.values() if v})
         self.label_filter_box.set_completion_values(label_values)
@@ -341,10 +347,11 @@ class ModManagerGui(tk.Tk):
     def _toggle_selected_mods(self) -> None:
         shown = list(self.current_mods_shown)
         indexes = self._selected_indexes(self.mods_tree)
+        selected_names = [shown[i - 1].name for i in indexes if 1 <= i <= len(shown)]
 
         def done(msg) -> None:
             self.status_var.set(msg or "No mods selected.")
-            self.refresh_mods()
+            self.refresh_mods(selected_names)
             self.refresh_presets()
 
         self._run_action("Toggling selected mods", lambda: toggle_mods_by_indexes(shown, indexes), done)
