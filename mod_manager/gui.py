@@ -188,11 +188,7 @@ class ModManagerGui(tk.Tk):
                 pass
         scale = self._button_scale()
         style = ttk.Style(self)
-        vpad = int(7 * scale)
-        style.configure("TButton", padding=(int(12 * scale), vpad))
-        style.configure("TSpinbox", padding=(int(6 * scale), vpad))
-        style.configure("TCombobox", padding=(int(4 * scale), vpad))
-        style.configure("TEntry", padding=(int(4 * scale), vpad))
+        style.configure("TButton", padding=(int(12 * scale), int(7 * scale)))
         style.configure("Treeview", rowheight=max(30, int(34 * scale)))
         style.configure("Mods.Treeview", rowheight=max(30, int(34 * scale)))
 
