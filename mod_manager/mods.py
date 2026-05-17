@@ -113,17 +113,31 @@ def apply_mods_page(cfg: Dict, page: int, label_filter: str, search_query: str, 
     return target_page, total, err
 
 def toggle_mods_by_indexes(shown: List[ModItem], indexes: List[int]) -> str:
-    last_operation = ""
+    to_install: List[ModItem] = []
+    uninstalled = 0
+    uninstall_errors = 0
     for num in indexes:
         if 1 <= num <= len(shown):
             m = shown[num - 1]
             if m.installed:
                 ok, msg = deactivate_mod(m)
-                last_operation = f"Uninstall {m.name}: {'OK' if ok else 'ERR'} — {msg}"
+                if ok:
+                    uninstalled += 1
+                else:
+                    uninstall_errors += 1
             else:
-                ok, msg = apply_mod(m)
-                last_operation = f"Install {m.name}: {'OK' if ok else 'ERR'} — {msg}"
-    return last_operation
+                to_install.append(m)
+    install_errors = 0
+    if to_install:
+        results = apply_mods_batch(to_install)
+        install_errors = sum(1 for ok, _msg in results if not ok)
+    installed = len(to_install) - install_errors
+    parts = []
+    if to_install:
+        parts.append(f"Installed {installed}/{len(to_install)}. Errors: {install_errors}.")
+    if uninstalled or uninstall_errors:
+        parts.append(f"Uninstalled {uninstalled}. Errors: {uninstall_errors}.")
+    return " ".join(parts)
 
 def get_mod_file_name(items: List[ModItem], page: int, file_name: str, cfg: Dict) -> str:
     if file_name.isdigit() and int(file_name) > 0 and int(file_name) < int(cfg.get("page_size", 10)) + 1:

@@ -54,6 +54,55 @@ pip install -r requirements.txt
 python .\mod-manager.py
 ```
 
+## 🖼️ GUI
+
+Run GUI from source:
+
+```bash
+python .\mod-manager.py gui
+```
+
+Build executable GUI app:
+
+```powershell
+$env:MOD_MANAGER_BUILD_EXE="1"
+python .\build-gui-exe.py
+```
+
+Default build creates a faster onedir app:
+
+```text
+dist\mod-manager-gui\mod-manager-gui.exe
+```
+
+Build onefile app:
+
+```powershell
+$env:MOD_MANAGER_BUILD_EXE="1"
+$env:MOD_MANAGER_ONEFILE="1"
+python .\build-gui-exe.py
+```
+
+Onefile output:
+
+```text
+dist\mod-manager-gui.exe
+```
+
+The onefile app starts slower because it unpacks files before launch. Use the onedir app for better startup performance.
+
+Build portable Python archive without PyInstaller:
+
+```bash
+python .\build-gui-exe.py
+```
+
+Archive output:
+
+```text
+dist\mod-manager-gui.pyz
+```
+
 ---
 
 ## 🖥️ Text UI Preview

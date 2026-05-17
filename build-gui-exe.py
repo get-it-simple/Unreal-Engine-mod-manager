@@ -26,6 +26,7 @@ def _build_exe() -> int:
     mode = "--onefile" if os.environ.get("MOD_MANAGER_ONEFILE") == "1" else "--onedir"
     cmd = [
         pyinstaller,
+        "-y",
         mode,
         "--windowed",
         "--name",
