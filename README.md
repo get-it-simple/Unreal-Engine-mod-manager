@@ -28,7 +28,7 @@ python mod-manager.py
 python mod-manager.py gui
 ```
 
-> **Windows note:** Creating symlinks requires Administrator rights or [Developer Mode](https://learn.microsoft.com/en-us/windows/apps/get-started/enable-your-device-for-development) enabled. Directory junctions do not require elevation.
+> **Windows note:** Directory junctions do not require elevation. For file symlinks, Administrator rights may be needed if the account lacks the *Create symbolic links* privilege — this can be avoided by enabling [Developer Mode](https://learn.microsoft.com/en-us/windows/apps/get-started/enable-your-device-for-development).
 
 ---
 
