@@ -98,6 +98,36 @@ class WrapFrame(ttk.Frame):
             self._placed_h = h
             self.configure(height=h)
 
+class ScrollableTabFrame(ttk.Frame):
+    def __init__(self, master, padding=0, **kwargs):
+        super().__init__(master, **kwargs)
+        self._vscroll = ttk.Scrollbar(self, orient="vertical")
+        self._canvas = tk.Canvas(self, yscrollcommand=self._vscroll.set, highlightthickness=0, bd=0)
+        self._canvas.grid(row=0, column=0, sticky="nsew")
+        self._vscroll.grid(row=0, column=1, sticky="ns")
+        self.rowconfigure(0, weight=1)
+        self.columnconfigure(0, weight=1)
+        self._vscroll.configure(command=self._canvas.yview)
+        self.inner = ttk.Frame(self._canvas, padding=padding)
+        self._win_id = self._canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        self.inner.bind("<Configure>", self._update_scrollregion)
+        self._canvas.bind("<Configure>", self._update_inner_width)
+
+    def _update_scrollregion(self, _event=None):
+        self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+        if self.inner.winfo_reqheight() > self._canvas.winfo_height():
+            self._vscroll.grid(row=0, column=1, sticky="ns")
+        else:
+            self._vscroll.grid_remove()
+
+    def _update_inner_width(self, event):
+        self._canvas.itemconfig(self._win_id, width=event.width)
+        self._update_scrollregion()
+
+    def scroll_y(self, delta: int) -> None:
+        self._canvas.yview_scroll(delta, "units")
+
+
 class _Tooltip:
     _DELAY = 100
 
@@ -159,16 +189,45 @@ class ModManagerGui(tk.Tk):
         self.mod_sort_reverse = False
         self.preset_sort_key = "name"
         self.preset_sort_reverse = False
-        self.button_scale_values = ["25%", "50%", "75%", "100%", "125%", "150%", "175%", "200%"]
+        self.ui_scale_values = ["25%", "50%", "75%", "100%", "125%", "150%", "175%", "200%"]
         self._apply_gui_style()
         self._build()
+        self.bind_all("<MouseWheel>", self._on_mousewheel)
         self.drop_targets.append(WindowsDropTarget(self, self._handle_mods_drop))
         self.drop_targets.append(WindowsDropTarget(self.mods_tree, self._handle_mods_drop))
         self.refresh_all()
 
-    def _button_scale(self) -> float:
+    def _on_mousewheel(self, event) -> None:
+        w = event.widget
+        while w:
+            if isinstance(w, ttk.Treeview):
+                return
+            if isinstance(w, ScrollableTabFrame):
+                w.scroll_y(int(-1 * (event.delta / 120)))
+                return
+            w = getattr(w, "master", None)
+
+    def _resize_notebook_tabs(self) -> None:
+        nb = getattr(self, "notebook", None)
+        if not nb:
+            return
+        tabs = nb.tabs()
+        n = len(tabs)
+        total_w = nb.winfo_width()
+        if n == 0 or total_w < 10:
+            return
+        font = tkfont.nametofont("TkDefaultFont")
+        max_text_w = max(font.measure(nb.tab(t, "text")) for t in tabs)
+        scale = self._ui_scale()
+        vpad = max(6, int(10 * scale))
+        hpad = max(10, (total_w - n * (max_text_w + 8)) // (n * 2))
+        for tab_id in tabs:
+            nb.tab(tab_id, padding=(hpad, vpad))
+
+    def _ui_scale(self) -> float:
         try:
-            value = str(self.cfg.get("button_size_percent", 100)).strip().rstrip("%")
+            raw = self.cfg.get("ui_scale_percent") or self.cfg.get("button_size_percent", 100)
+            value = str(raw).strip().rstrip("%")
             return max(25, int(value)) / 100
         except Exception:
             return 1
@@ -176,9 +235,11 @@ class ModManagerGui(tk.Tk):
     def _apply_gui_style(self) -> None:
         font_family = (self.cfg.get("gui_font_family") or "").strip()
         try:
-            font_size = max(6, int(self.cfg.get("gui_font_size", 10)))
+            base_font_size = max(6, int(self.cfg.get("gui_font_size", 10)))
         except Exception:
-            font_size = 10
+            base_font_size = 10
+        scale = self._ui_scale()
+        font_size = max(6, round(base_font_size * scale))
         for font_name in ["TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont"]:
             try:
                 options = {"size": font_size}
@@ -187,38 +248,41 @@ class ModManagerGui(tk.Tk):
                 tkfont.nametofont(font_name).configure(**options)
             except tk.TclError:
                 pass
-        scale = self._button_scale()
         style = ttk.Style(self)
         style.configure("TButton", padding=(int(12 * scale), int(7 * scale)))
         style.configure("Treeview", rowheight=max(30, int(34 * scale)))
         style.configure("Mods.Treeview", rowheight=max(30, int(34 * scale)))
 
-    def _apply_button_widths(self) -> None:
-        scale = self._button_scale()
-        for widget in self.action_widgets:
-            try:
-                text = str(widget.cget("text"))
-                if text:
-                    w = max(3, int(4 * scale)) if len(text) <= 3 else max(int(14 * scale), len(text) + 2)
-                    widget.configure(width=w)
-                    if isinstance(widget.master, WrapFrame):
-                        widget.master.after_idle(widget.master._arrange)
-            except tk.TclError:
-                pass
+    def _rebuild_tabs(self) -> None:
+        self.action_widgets.clear()
+        for tab in [self.mods_tab, self.presets_tab, self.settings_tab, self.broken_tab]:
+            for child in tab.winfo_children():
+                child.destroy()
+        self._apply_gui_style()
+        self._build_mods()
+        self._build_presets()
+        self._build_settings()
+        self._build_broken()
+        self.drop_targets = self.drop_targets[:1]
+        self.drop_targets.append(WindowsDropTarget(self.mods_tree, self._handle_mods_drop))
+        self.after_idle(self._resize_notebook_tabs)
 
     def _build(self) -> None:
         root = ttk.Frame(self, padding=10)
         root.pack(fill="both", expand=True)
-        notebook = ttk.Notebook(root)
-        notebook.pack(fill="both", expand=True)
-        self.mods_tab = ttk.Frame(notebook, padding=8)
-        self.presets_tab = ttk.Frame(notebook, padding=8)
-        self.settings_tab = ttk.Frame(notebook, padding=8)
-        self.broken_tab = ttk.Frame(notebook, padding=8)
-        notebook.add(self.mods_tab, text="Mods")
-        notebook.add(self.presets_tab, text="Presets")
-        notebook.add(self.settings_tab, text="Settings")
-        notebook.add(self.broken_tab, text="Broken")
+        self.notebook = ttk.Notebook(root)
+        self.notebook.pack(fill="both", expand=True)
+        self.notebook.bind("<Configure>", lambda _e: self.after_idle(self._resize_notebook_tabs))
+
+        def _tab(text: str, padding: int = 8) -> ttk.Frame:
+            sf = ScrollableTabFrame(self.notebook, padding=padding)
+            self.notebook.add(sf, text=text)
+            return sf.inner
+
+        self.mods_tab     = _tab("⊞  Mods")
+        self.presets_tab  = _tab("☰  Presets")
+        self.settings_tab = _tab("⚙  Settings")
+        self.broken_tab   = _tab("⚠  Broken")
         self._build_mods()
         self._build_presets()
         self._build_settings()
@@ -227,7 +291,7 @@ class ModManagerGui(tk.Tk):
         status.pack(fill="x", pady=(8, 0))
 
     def _button(self, master, text: str, command: Callable, tooltip: str = ""):
-        scale = self._button_scale()
+        scale = self._ui_scale()
         width = max(3, int(4 * scale)) if len(text) <= 3 else max(int(14 * scale), len(text) + 2)
         btn = ttk.Button(master, text=text, command=command, width=width)
         if tooltip:
@@ -311,9 +375,9 @@ class ModManagerGui(tk.Tk):
         mod_page_spin = ttk.Spinbox(actions, from_=1, to=9999, textvariable=self.mod_page, width=6, command=self.refresh_mods)
         self.action_widgets.append(mod_page_spin)
         actions.add(mod_page_spin, padx=(6, 12))
-        actions.add(self._button(actions, "▼", self._install_page, "Install page"))
-        actions.add(self._button(actions, "▲", self._uninstall_page, "Uninstall page"), padx=(6, 0))
-        actions.add(self._button(actions, "⇄", self._toggle_selected_mods, "Toggle selected"), padx=(6, 12))
+        actions.add(self._button(actions, "▼✓", self._install_page, "Install page"))
+        actions.add(self._button(actions, "▲✗", self._uninstall_page, "Uninstall page"), padx=(6, 0))
+        actions.add(self._button(actions, "⇅✓", self._toggle_selected_mods, "Toggle selected"), padx=(6, 12))
         actions.add(self._button(actions, "📥", self._import_mod_files, "Import mods"), padx=(6, 0))
         actions.add(self._button(actions, "📂", self._import_mod_folder, "Import folder"), padx=(6, 0))
         actions.add(self._button(actions, "🖼", self._set_mod_image, "Set image"), padx=(6, 12))
@@ -365,18 +429,19 @@ class ModManagerGui(tk.Tk):
             ("max_mod_name_len", "Max mod name length"),
             ("max_preset_name_len", "Max preset name length"),
             ("max_label_name_len", "Max label name length"),
-            ("button_size_percent", "Button size"),
+            ("ui_scale_percent", "UI Scale"),
             ("gui_font_family", "Font"),
             ("gui_font_size", "Font size"),
         ]
         for row, (key, label) in enumerate(rows):
             ttk.Label(self.settings_tab, text=label).grid(row=row, column=0, sticky="w", pady=4)
             var = tk.StringVar(value=str(self.cfg.get(key, "")))
-            if key == "button_size_percent":
-                var = tk.StringVar(value=f"{str(self.cfg.get(key, 100)).strip().rstrip('%')}%")
+            if key == "ui_scale_percent":
+                raw = self.cfg.get("ui_scale_percent") or self.cfg.get("button_size_percent", 100)
+                var = tk.StringVar(value=f"{str(raw).strip().rstrip('%')}%")
             self.setting_vars[key] = var
-            if key == "button_size_percent":
-                ttk.Combobox(self.settings_tab, textvariable=var, values=self.button_scale_values, state="readonly", width=12).grid(row=row, column=1, sticky="w", padx=8, pady=4)
+            if key == "ui_scale_percent":
+                ttk.Combobox(self.settings_tab, textvariable=var, values=self.ui_scale_values, state="readonly", width=12).grid(row=row, column=1, sticky="w", padx=8, pady=4)
             elif key == "gui_font_family":
                 ttk.Combobox(self.settings_tab, textvariable=var, values=sorted(tkfont.families()), width=40).grid(row=row, column=1, sticky="w", padx=8, pady=4)
             else:
@@ -386,7 +451,7 @@ class ModManagerGui(tk.Tk):
         self.settings_tab.columnconfigure(1, weight=1)
         buttons = WrapFrame(self.settings_tab)
         buttons.grid(row=len(rows), column=0, columnspan=3, sticky="ew", pady=(12, 0))
-        buttons.add(self._button(buttons, "💾", self._save_settings, "Save settings"))
+        buttons.add(self._button(buttons, "✔", self._save_settings, "Save settings"))
         buttons.add(self._button(buttons, "📁", lambda: self._open_folder("source"), "Open source folder"), padx=(8, 0))
         buttons.add(self._button(buttons, "📁", lambda: self._open_folder("game"), "Open game folder"), padx=(8, 0))
 
@@ -665,7 +730,7 @@ class ModManagerGui(tk.Tk):
         self.current_mods_shown = shown
         self.current_mod_labels = labels
         self.mod_page.set(page)
-        row_height = max(30, int(34 * self._button_scale()))
+        row_height = max(30, int(34 * self._ui_scale()))
         row_height = max(row_height, max(28, int(self._image_width() * 0.65)) + 6)
         ttk.Style(self).configure("Mods.Treeview", rowheight=row_height)
         self.mods_tree.delete(*self.mods_tree.get_children())
@@ -847,7 +912,7 @@ class ModManagerGui(tk.Tk):
 
         def worker():
             for key, value in values.items():
-                if key in ["page_size", "max_mod_name_len", "max_preset_name_len", "max_label_name_len", "button_size_percent", "gui_font_size"]:
+                if key in ["page_size", "max_mod_name_len", "max_preset_name_len", "max_label_name_len", "ui_scale_percent", "gui_font_size"]:
                     numeric = value.rstrip("%")
                     if numeric.isdigit():
                         self.cfg[key] = int(numeric)
@@ -857,8 +922,7 @@ class ModManagerGui(tk.Tk):
             return "Settings saved."
 
         def done(msg) -> None:
-            self._apply_gui_style()
-            self._apply_button_widths()
+            self._rebuild_tabs()
             self.status_var.set(msg)
             self.refresh_all()
 
