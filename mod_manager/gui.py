@@ -564,6 +564,17 @@ class ModManagerGui(tk.Tk):
             return "#%02x%02x%02x" % color[:3]
         return str(color)
 
+    def _center_in_frame(self, img: tk.PhotoImage, width: int, height: int, bg: str) -> tk.PhotoImage:
+        iw, ih = img.width(), img.height()
+        if iw == width and ih == height:
+            return img
+        frame = tk.PhotoImage(width=width, height=height)
+        frame.put(bg, to=(0, 0, width, height))
+        x_off = max(0, (width - iw) // 2)
+        y_off = max(0, (height - ih) // 2)
+        frame.tk.call(frame, "copy", img, "-to", x_off, y_off)
+        return frame
+
     def _resize_image(self, source: tk.PhotoImage, width: int) -> tk.PhotoImage:
         source_w = max(1, source.width())
         source_h = max(1, source.height())
@@ -582,29 +593,32 @@ class ModManagerGui(tk.Tk):
         img.put(" ".join(rows))
         return img
 
-    def _placeholder(self, name: str) -> tk.PhotoImage:
+    def _placeholder(self, name: str, installed: bool = False) -> tk.PhotoImage:
         width = self._image_width()
-        key = f"{name}:{width}"
+        key = f"{name}:{width}:{installed}"
         if key in self.placeholder_images:
             return self.placeholder_images[key]
         path = mod_image_path(self.cfg, name)
+        max_h = max(28, int(width * 0.65))
+        bg = "#d4edda" if installed else "white"
         img = None
         if path:
-            max_h = max(28, int(width * 0.65))
             try:
                 raw = tk.PhotoImage(file=str(path))
                 src_w = max(1, raw.width())
                 src_h = max(1, raw.height())
                 fit_w = min(width, max(1, int(src_w * max_h / src_h)))
-                img = self._resize_image(raw, fit_w)
+                scaled = self._resize_image(raw, fit_w)
+                img = self._center_in_frame(scaled, width, max_h, bg)
             except tk.TclError:
-                img = _load_image_gdi(path, width, max_h)
+                raw_gdi = _load_image_gdi(path, width, max_h)
+                if raw_gdi:
+                    img = self._center_in_frame(raw_gdi, width, max_h, bg)
         if img is None:
-            height = max(28, int(width * 0.65))
-            img = tk.PhotoImage(width=width, height=height)
+            img = tk.PhotoImage(width=width, height=max_h)
             colors = ["#d9e8fb", "#e4f4de", "#f7e6d0", "#eadff7", "#f7dfe8"]
             color = colors[sum(ord(c) for c in name) % len(colors)]
-            img.put(color, to=(0, 0, width, height))
+            img.put(color, to=(0, 0, width, max_h))
         self.placeholder_images[key] = img
         return img
 
@@ -786,7 +800,7 @@ class ModManagerGui(tk.Tk):
         for i, mod in enumerate(shown, 1):
             rec = records.get(mod.name, {})
             last_managed = rec.get("last_managed") or "-"
-            image = self._placeholder(mod.name)
+            image = self._placeholder(mod.name, mod.installed)
             name_display = f"✓  {mod.name}" if mod.installed else mod.name
             tags = ("installed",) if mod.installed else ()
             self.mods_tree.insert("", "end", iid=str(i), text="", image=image, values=(name_display, labels.get(mod.name, "-"), last_managed), tags=tags)
