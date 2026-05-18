@@ -235,11 +235,43 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("gui")
 
+    help_p = sub.add_parser("help", help="Show help for a command")
+    help_p.add_argument("topic", nargs="*", metavar="command", help="Command and optional subcommand (e.g. mods toggle)")
+
     return parser
+
+def _subparsers_map(parser: argparse.ArgumentParser) -> dict:
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return action.choices
+    return {}
+
+def _run_help(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    topics = args.topic
+    if not topics:
+        parser.print_help()
+        return 0
+    top = _subparsers_map(parser)
+    if topics[0] not in top:
+        print(f"Unknown command: '{topics[0]}'. Available: {', '.join(top)}")
+        return 1
+    cmd_parser = top[topics[0]]
+    if len(topics) == 1:
+        cmd_parser.print_help()
+        return 0
+    sub = _subparsers_map(cmd_parser)
+    if topics[1] not in sub:
+        print(f"Unknown subcommand: '{topics[1]}'. Available: {', '.join(sub) or 'none'}")
+        cmd_parser.print_help()
+        return 1
+    sub[topics[1]].print_help()
+    return 0
 
 def run_cli(argv: List[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.cmd == "help":
+        return _run_help(args, parser)
     cfg = load_config()
     if args.cmd == "mods":
         return _run_mods(args, cfg)

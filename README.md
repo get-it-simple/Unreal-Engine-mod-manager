@@ -178,3 +178,16 @@ python mod-manager.py broken remove --all
 python mod-manager.py open source   # Open mods source folder
 python mod-manager.py open game     # Open game mods folder
 ```
+
+---
+
+### `help` — Show help
+
+```bash
+python mod-manager.py help                   # General help
+python mod-manager.py help mods              # Help for mods command
+python mod-manager.py help mods toggle       # Help for mods toggle subcommand
+python mod-manager.py help presets
+python mod-manager.py help settings set
+python mod-manager.py help broken remove
+```
