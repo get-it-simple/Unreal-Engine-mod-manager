@@ -33,6 +33,8 @@ def is_image_file(path: Path) -> bool:
 def _link_dest_name(p: Path, link_prefix: str) -> str:
     if not link_prefix or p.is_dir():
         return p.name
+    if p.stem.endswith(link_prefix):
+        return p.name
     return p.stem + link_prefix + p.suffix
 
 def discover_mods(cfg: Dict) -> List[ModItem]:
