@@ -114,18 +114,22 @@ class ScrollableTabFrame(ttk.Frame):
         self._canvas.bind("<Configure>", self._update_inner_width)
 
     def _update_scrollregion(self, _event=None):
-        self._canvas.configure(scrollregion=self._canvas.bbox("all"))
-        if self.inner.winfo_reqheight() > self._canvas.winfo_height():
+        req_h = self.inner.winfo_reqheight()
+        canvas_h = self._canvas.winfo_height()
+        self._canvas.configure(scrollregion=(0, 0, self._canvas.winfo_width(), req_h))
+        if req_h > canvas_h:
             self._vscroll.grid(row=0, column=1, sticky="ns")
         else:
             self._vscroll.grid_remove()
+            self._canvas.yview_moveto(0)
 
     def _update_inner_width(self, event):
         self._canvas.itemconfig(self._win_id, width=event.width)
         self._update_scrollregion()
 
     def scroll_y(self, delta: int) -> None:
-        self._canvas.yview_scroll(delta, "units")
+        if self.inner.winfo_reqheight() > self._canvas.winfo_height():
+            self._canvas.yview_scroll(delta, "units")
 
 
 class _Tooltip:
@@ -185,6 +189,7 @@ class ModManagerGui(tk.Tk):
         self.drop_targets = []
         self.busy = False
         self.action_widgets = []
+        self.mod_selection_widgets = []
         self.mod_sort_key = "d"
         self.mod_sort_reverse = False
         self.preset_sort_key = "name"
@@ -212,15 +217,11 @@ class ModManagerGui(tk.Tk):
         if not nb:
             return
         tabs = nb.tabs()
-        n = len(tabs)
-        total_w = nb.winfo_width()
-        if n == 0 or total_w < 10:
+        if not tabs:
             return
-        font = tkfont.nametofont("TkDefaultFont")
-        max_text_w = max(font.measure(nb.tab(t, "text")) for t in tabs)
         scale = self._ui_scale()
-        vpad = max(6, int(10 * scale))
-        hpad = max(10, (total_w - n * (max_text_w + 8)) // (n * 2))
+        hpad = max(6, int(14 * scale))
+        vpad = max(4, int(8 * scale))
         for tab_id in tabs:
             nb.tab(tab_id, padding=(hpad, vpad))
 
@@ -255,6 +256,7 @@ class ModManagerGui(tk.Tk):
 
     def _rebuild_tabs(self) -> None:
         self.action_widgets.clear()
+        self.mod_selection_widgets.clear()
         for tab in [self.mods_tab, self.presets_tab, self.settings_tab, self.broken_tab]:
             for child in tab.winfo_children():
                 child.destroy()
@@ -268,14 +270,14 @@ class ModManagerGui(tk.Tk):
         self.after_idle(self._resize_notebook_tabs)
 
     def _build(self) -> None:
-        root = ttk.Frame(self, padding=10)
+        root = ttk.Frame(self, padding=(4, 6))
         root.pack(fill="both", expand=True)
         self.notebook = ttk.Notebook(root)
         self.notebook.pack(fill="both", expand=True)
         self.notebook.bind("<Configure>", lambda _e: self.after_idle(self._resize_notebook_tabs))
 
-        def _tab(text: str, padding: int = 8) -> ttk.Frame:
-            sf = ScrollableTabFrame(self.notebook, padding=padding)
+        def _tab(text: str) -> ttk.Frame:
+            sf = ScrollableTabFrame(self.notebook, padding=(4, 6))
             self.notebook.add(sf, text=text)
             return sf.inner
 
@@ -299,6 +301,17 @@ class ModManagerGui(tk.Tk):
         self.action_widgets.append(btn)
         return btn
 
+    def _on_mod_selection_changed(self) -> None:
+        tree = getattr(self, "mods_tree", None)
+        if not tree or self.busy:
+            return
+        state = "normal" if tree.selection() else "disabled"
+        for w in self.mod_selection_widgets:
+            try:
+                w.configure(state=state)
+            except tk.TclError:
+                pass
+
     def _set_busy(self, busy: bool, text: str = "") -> None:
         self.busy = busy
         state = "disabled" if busy else "normal"
@@ -307,6 +320,8 @@ class ModManagerGui(tk.Tk):
                 widget.configure(state=state)
             except tk.TclError:
                 pass
+        if not busy:
+            self._on_mod_selection_changed()
         self.configure(cursor="watch" if busy else "")
         if text:
             self.status_var.set(text)
@@ -366,6 +381,7 @@ class ModManagerGui(tk.Tk):
         self.mods_tree.tag_configure("installed", background="#d4edda")
         self.mods_tree.bind("<ButtonRelease-1>", self._save_placeholder_width)
         self.mods_tree.bind("<Double-1>", lambda _: self._toggle_selected_mods())
+        self.mods_tree.bind("<<TreeviewSelect>>", lambda _: self._on_mod_selection_changed())
         actions = WrapFrame(self.mods_tab)
         actions.pack(fill="x", side="bottom")
         self.mods_tree.pack(fill="both", expand=True, pady=8)
@@ -377,17 +393,27 @@ class ModManagerGui(tk.Tk):
         actions.add(mod_page_spin, padx=(6, 12))
         actions.add(self._button(actions, "▼✓", self._install_page, "Install page"))
         actions.add(self._button(actions, "▲✗", self._uninstall_page, "Uninstall page"), padx=(6, 0))
-        actions.add(self._button(actions, "⇅✓", self._toggle_selected_mods, "Toggle selected"), padx=(6, 12))
+        toggle_btn = self._button(actions, "⇅✓", self._toggle_selected_mods, "Toggle selected")
+        actions.add(toggle_btn, padx=(6, 12))
+        self.mod_selection_widgets.append(toggle_btn)
         actions.add(self._button(actions, "📥", self._import_mod_files, "Import mods"), padx=(6, 0))
         actions.add(self._button(actions, "📂", self._import_mod_folder, "Import folder"), padx=(6, 0))
-        actions.add(self._button(actions, "🖼", self._set_mod_image, "Set image"), padx=(6, 12))
+        img_btn = self._button(actions, "🖼", self._set_mod_image, "Set image")
+        actions.add(img_btn, padx=(6, 12))
+        self.mod_selection_widgets.append(img_btn)
         label_group = ttk.Frame(actions)
         ttk.Label(label_group, text="Label").pack(side="left")
         self.label_edit_box = AutocompleteCombobox(label_group, textvariable=self.label_edit_var, width=18)
         self.label_edit_box.pack(side="left", padx=(6, 6))
-        self._button(label_group, "+", self._add_label_selected, "Add label").pack(side="left")
-        self._button(label_group, "-", self._remove_label_selected, "Remove label").pack(side="left", padx=(6, 0))
+        self.mod_selection_widgets.append(self.label_edit_box)
+        add_btn = self._button(label_group, "+", self._add_label_selected, "Add label")
+        add_btn.pack(side="left")
+        self.mod_selection_widgets.append(add_btn)
+        remove_btn = self._button(label_group, "-", self._remove_label_selected, "Remove label")
+        remove_btn.pack(side="left", padx=(6, 0))
+        self.mod_selection_widgets.append(remove_btn)
         actions.add(label_group)
+        self.after_idle(self._on_mod_selection_changed)
 
     def _build_presets(self) -> None:
         top = WrapFrame(self.presets_tab)
@@ -418,6 +444,18 @@ class ModManagerGui(tk.Tk):
         actions.add(self._button(actions, "Toggle Selected", self._toggle_selected_presets))
         actions.add(self._button(actions, "Delete Selected", self._delete_selected_presets), padx=(6, 0))
 
+    def _setting_preview_text(self, key: str, val: str) -> str:
+        if key == "link_prefix":
+            if val:
+                return f'"mod.pak"  →  "mod{val}.pak"'
+            return '"mod.pak"  →  "mod.pak"  (prefix not set)'
+        if key == "mod_extensions":
+            if not val:
+                return "All files included"
+            parts = [e.strip().lstrip(".") for e in val.split(",") if e.strip()]
+            return "Filter: " + ",  ".join(f".{p}" for p in parts if p)
+        return ""
+
     def _build_settings(self) -> None:
         self.setting_vars: Dict[str, tk.StringVar] = {}
         rows = [
@@ -433,8 +471,9 @@ class ModManagerGui(tk.Tk):
             ("gui_font_family", "Font"),
             ("gui_font_size", "Font size"),
         ]
+        preview_keys = {"mod_extensions", "link_prefix"}
         for row, (key, label) in enumerate(rows):
-            ttk.Label(self.settings_tab, text=label).grid(row=row, column=0, sticky="w", pady=4)
+            ttk.Label(self.settings_tab, text=label).grid(row=row, column=0, sticky="nw", pady=4)
             var = tk.StringVar(value=str(self.cfg.get(key, "")))
             if key == "ui_scale_percent":
                 raw = self.cfg.get("ui_scale_percent") or self.cfg.get("button_size_percent", 100)
@@ -444,6 +483,16 @@ class ModManagerGui(tk.Tk):
                 ttk.Combobox(self.settings_tab, textvariable=var, values=self.ui_scale_values, state="readonly", width=12).grid(row=row, column=1, sticky="w", padx=8, pady=4)
             elif key == "gui_font_family":
                 ttk.Combobox(self.settings_tab, textvariable=var, values=sorted(tkfont.families()), width=40).grid(row=row, column=1, sticky="w", padx=8, pady=4)
+            elif key in preview_keys:
+                cell = ttk.Frame(self.settings_tab)
+                ttk.Entry(cell, textvariable=var).pack(fill="x")
+                preview_lbl = ttk.Label(cell, foreground="#888888")
+                preview_lbl.pack(anchor="w", pady=(2, 0))
+                cell.grid(row=row, column=1, sticky="ew", padx=8, pady=4)
+                def _update(_, k=key, v=var, lbl=preview_lbl):
+                    lbl.config(text=self._setting_preview_text(k, v.get().strip()))
+                var.trace_add("write", _update)
+                _update(None)
             else:
                 ttk.Entry(self.settings_tab, textvariable=var, width=70).grid(row=row, column=1, sticky="ew", padx=8, pady=4)
             if key in ["game_mods_dir", "mods_source_dir"]:
@@ -752,6 +801,7 @@ class ModManagerGui(tk.Tk):
         self.label_filter_box.set_completion_values(label_values)
         self.label_edit_box.set_completion_values(label_values)
         self.status_var.set(f"Mods page {page}/{pages}. Items: {len(items)}")
+        self._on_mod_selection_changed()
 
     def refresh_presets(self) -> None:
         if not ensure_paths(self.cfg):
