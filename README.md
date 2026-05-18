@@ -1,143 +1,180 @@
-# Unreal Engine Console Mod-Manager (Python)
+# Mod Manager
+
+A symlink-based mod manager for Unreal Engine games. Manages mods as symbolic links (files) and junctions (folders) in the game directory — no file copying.
 
 ---
 
-## ✨ Features
+## Features
 
-- 🔗 **Symlink Management**
-  - Uses `mklink` for creating symbolic links:
-    - Files → symbolic links
-    - Folders → junctions (`/J`)
-- ⚙️ **Config in JSON**
-  - Stored next to the script
-    - labels - separate config for labels to simplify managment with different names
-    - config - script base settings
-  - Defines:
-    - Game mods directory
-    - Mods source directory
-    - File types
-    - Page size
-- 🔄 **Mod Operations**
-  - Apply / deactivate mods (create/remove links in game dir)
-  - Single **mods menu**:
-    - List & toggle (install/uninstall)
-    - Search by name
-    - Pagination (20 items per page: `p1`, `p2`, …)
-    - Multi-select via comma-separated indices
-- 📂 **Presets in JSON**
-  - Save current installed set
-  - Apply / deactivate presets
-  - Delete presets
-  - All actions from **one unified presets menu**
-- 🛠️ **Maintenance**
-  - Fix broken links (remove dead ones automatically)
+- Install / uninstall mods via symlinks — no file duplication
+- Presets — save and restore named mod sets
+- Labels — tag and filter mods by category
+- Pagination, search, and ordering
+- Broken link detection and cleanup
+- GUI (tkinter) and CLI interfaces
 
 ---
 
-## ⚠️ Notes
+## Quick Start
 
-- On **Windows**, creating symlinks may require **Administrator rights** or enabling **Developer Mode**.
-- Junctions (`/J`) for directories usually don’t require elevated permissions.
-- Linked names in the game directory always match the source file/folder names.
-
----
-
-## ⚙️ Install requirements
-### optional to use autocompletion for commands
 ```bash
+# Optional: enable tab-completion in CLI
 pip install -r requirements.txt
+
+# Launch interactive text UI
+python mod-manager.py
+
+# Launch GUI
+python mod-manager.py gui
 ```
 
-## ▶️ Run
+> **Windows note:** Creating symlinks requires Administrator rights or [Developer Mode](https://learn.microsoft.com/en-us/windows/apps/get-started/enable-your-device-for-development) enabled. Directory junctions do not require elevation.
 
-```bash
-python .\mod-manager.py
-```
+---
 
-## 🖼️ GUI
+## Build GUI Executable
 
-Run GUI from source:
-
-```bash
-python .\mod-manager.py gui
-```
-
-Build executable GUI app:
+<details>
+<summary>Onedir app (recommended — faster startup)</summary>
 
 ```powershell
 $env:MOD_MANAGER_BUILD_EXE="1"
-python .\build-gui-exe.py
+python build-gui-exe.py
+# Output: dist\mod-manager-gui\mod-manager-gui.exe
 ```
 
-Default build creates a faster onedir app:
+</details>
 
-```text
-dist\mod-manager-gui\mod-manager-gui.exe
-```
-
-Build onefile app:
+<details>
+<summary>Onefile app (single executable, slower startup)</summary>
 
 ```powershell
 $env:MOD_MANAGER_BUILD_EXE="1"
 $env:MOD_MANAGER_ONEFILE="1"
-python .\build-gui-exe.py
+python build-gui-exe.py
+# Output: dist\mod-manager-gui.exe
 ```
 
-Onefile output:
+</details>
 
-```text
-dist\mod-manager-gui.exe
-```
-
-The onefile app starts slower because it unpacks files before launch. Use the onedir app for better startup performance.
-
-Build portable Python archive without PyInstaller:
+<details>
+<summary>Portable Python archive (no PyInstaller)</summary>
 
 ```bash
-python .\build-gui-exe.py
+python build-gui-exe.py
+# Output: dist\mod-manager-gui.pyz
 ```
 
-Archive output:
+</details>
 
-```text
-dist\mod-manager-gui.pyz
+---
+
+## CLI Reference
+
+All commands follow the pattern: `python mod-manager.py <command> <subcommand> [args] [flags]`
+
+### `mods` — Manage mods
+
+| Subcommand | Description |
+|---|---|
+| `list` | List mods on current page |
+| `search <text>` | Filter by name |
+| `label <text>` | Filter by label |
+| `page <n>` | Go to page `n` |
+| `order <mode>` | Sort order: `d` (default) or `cd` (created date) |
+| `install` | Install all mods on page |
+| `uninstall` | Uninstall all mods on page |
+| `toggle <indexes>` | Toggle mods by index (comma-separated) |
+| `label-add <label> <indexes>` | Assign label to selected mods |
+| `label-remove <label> <indexes>` | Remove label from selected mods |
+
+**Common flags** (for `list`, `install`, `uninstall`, `toggle`):
+
+```
+--page <n>       Page number (default: 1)
+--label <text>   Filter by label
+--search <text>  Filter by name
+--order d|cd     Sort order
+```
+
+**Examples:**
+
+```bash
+python mod-manager.py mods list --page 2 --search weapon
+python mod-manager.py mods toggle 1,3,5
+python mod-manager.py mods label-add combat 2,4 --page 1
+python mod-manager.py mods install --label combat
 ```
 
 ---
 
-## 🖥️ Text UI Preview
+### `presets` — Manage presets
 
-```text
-Mod Manager — Menu
-================================================
-1) ⚙️ Settings
-2) 🔄 Mods    - list, toggle, search
-3) 🗃️ Presets - save,  apply, toggle, delete
-4) 📋 Open mods source folder
-5) 📂 Open game mods folder
-6) 🛠️ Fix missing mods
-0) 🏠 Exit
-Select [0-6]:
+| Subcommand | Description |
+|---|---|
+| `list` | List saved presets |
+| `page <n>` | Go to page `n` |
+| `save <name>` | Save current installed mods as a preset |
+| `toggle <indexes>` | Apply or remove preset by index |
+| `delete <indexes>` | Delete presets by index |
+
+**Examples:**
+
+```bash
+python mod-manager.py presets save "my-loadout"
+python mod-manager.py presets toggle 1
+python mod-manager.py presets delete 2,3
 ```
-## Mods menu
-```text
-Advanced completion disabled. Install: pip install prompt_toolkit
 
-Page 1/19    Order: d    Filter: -
-================================================
- 1.  [X] mod_name_1... - [-]
- 2.  [ ] mod_name_2... - [-]
- 3.  [X] mod_name_3    - [label-1]
+---
 
-Type / for commands
->
+### `settings` — View and update config
+
+| Subcommand | Description |
+|---|---|
+| `show` | Print all current settings |
+| `set [options]` | Update one or more settings |
+
+**`set` options:**
+
 ```
-## Mods menu - filter by label and order by create date
-```text
-Page 1/1    Order: d    Filter: l:label-1 | s:mod_nam
-================================================
-1.  [X] mod_name_1...  - [label-1]
+--game-mods-dir <path>
+--mods-source-dir <path>
+--mod-extensions <exts>     Comma-separated, e.g. .pak,.rar
+--page-size <n>
+--max-mod-name-len <n>
+--max-preset-name-len <n>
+--max-label-name-len <n>
+```
 
-Type / for commands
->
+**Examples:**
+
+```bash
+python mod-manager.py settings show
+python mod-manager.py settings set --game-mods-dir "C:/Game/Mods" --page-size 20
+```
+
+---
+
+### `broken` — Broken link maintenance
+
+| Subcommand | Description |
+|---|---|
+| `list` | List all broken symlinks in the game directory |
+| `remove <indexes>` | Remove specific broken links by index |
+| `remove --all` | Remove all broken links |
+
+```bash
+python mod-manager.py broken list
+python mod-manager.py broken remove 1,2
+python mod-manager.py broken remove --all
+```
+
+---
+
+### `open` — Open folders
+
+```bash
+python mod-manager.py open source   # Open mods source folder
+python mod-manager.py open game     # Open game mods folder
 ```
