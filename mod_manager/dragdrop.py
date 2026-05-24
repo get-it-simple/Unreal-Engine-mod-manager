@@ -284,6 +284,85 @@ def read_clipboard_paths() -> List[Path]:
         return []
 
 
+def read_clipboard_image() -> Path | None:
+    """Read raw image data from Windows clipboard (browser Copy Image).
+
+    Tries the named 'PNG' format first (Chrome/Edge, lossless), then falls
+    back to CF_DIB via Pillow.  Returns a temp .png Path, or None.
+    """
+    if not is_windows():
+        return None
+    try:
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+
+        user32.RegisterClipboardFormatW.argtypes = [ctypes.c_wchar_p]
+        user32.RegisterClipboardFormatW.restype = ctypes.c_uint
+        user32.IsClipboardFormatAvailable.argtypes = [ctypes.c_uint]
+        user32.IsClipboardFormatAvailable.restype = ctypes.c_bool
+        user32.OpenClipboard.argtypes = [ctypes.c_void_p]
+        user32.OpenClipboard.restype = ctypes.c_bool
+        user32.GetClipboardData.argtypes = [ctypes.c_uint]
+        user32.GetClipboardData.restype = ctypes.c_void_p
+        user32.CloseClipboard.restype = ctypes.c_bool
+        kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+        kernel32.GlobalLock.restype = ctypes.c_void_p
+        kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+        kernel32.GlobalSize.argtypes = [ctypes.c_void_p]
+        kernel32.GlobalSize.restype = ctypes.c_size_t
+
+        CF_DIB = 8
+        cf_png = user32.RegisterClipboardFormatW("PNG")
+
+        # Prefer named PNG format (Chrome/Edge puts full PNG bytes here)
+        for fmt, suffix in [(cf_png, ".png"), (CF_DIB, ".bmp")]:
+            if not user32.IsClipboardFormatAvailable(fmt):
+                continue
+            if not user32.OpenClipboard(None):
+                continue
+            data = None
+            try:
+                handle = user32.GetClipboardData(fmt)
+                if handle:
+                    data = _read_hglobal(kernel32, handle)
+            finally:
+                user32.CloseClipboard()
+            if not data:
+                continue
+
+            if fmt == cf_png:
+                tmp = Path(tempfile.mktemp(suffix=".png", prefix="mods_clip_"))
+                tmp.write_bytes(data)
+                return tmp
+
+            # CF_DIB: raw DIB bytes → convert via Pillow
+            try:
+                import io
+                from PIL import Image
+                img = Image.open(io.BytesIO(data))
+                tmp = Path(tempfile.mktemp(suffix=".png", prefix="mods_clip_"))
+                img.save(str(tmp), format="PNG")
+                return tmp
+            except Exception:
+                pass
+
+        # Last resort: Pillow ImageGrab handles CF_DIB / CF_BITMAP natively
+        try:
+            from PIL import ImageGrab
+            img = ImageGrab.grabclipboard()
+            if img is not None and not isinstance(img, list):
+                tmp = Path(tempfile.mktemp(suffix=".png", prefix="mods_clip_"))
+                img.save(str(tmp), format="PNG")
+                return tmp
+        except Exception:
+            pass
+
+        return None
+    except Exception as exc:
+        logger.error("clipboard: read_clipboard_image failed: %s", exc)
+        return None
+
+
 class WindowsDropTarget:
     def __init__(self, widget, callback: Callable[[List[Path], int, int], None]):
         self.widget = widget

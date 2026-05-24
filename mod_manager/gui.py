@@ -27,7 +27,7 @@ from .mods import (
     toggle_mods_by_indexes,
 )
 from .presets import delete_presets_by_indexes, presets_records, presets_view, save_preset_from_installed, toggle_presets_by_indexes
-from .dragdrop import WindowsDropTarget, read_clipboard_paths
+from .dragdrop import WindowsDropTarget, read_clipboard_image, read_clipboard_paths
 from .storage import load_config, save_config
 
 class AutocompleteCombobox(ttk.Combobox):
@@ -681,10 +681,14 @@ class ModManagerGui(tk.Tk):
         except Exception:
             return
         paths = read_clipboard_paths()
-        if not paths:
-            self.status_var.set("Clipboard: no files.")
+        if paths:
+            self._handle_clipboard_paths(paths)
             return
-        self._handle_clipboard_paths(paths)
+        img_path = read_clipboard_image()
+        if img_path:
+            self._handle_clipboard_paths([img_path])
+            return
+        self.status_var.set("Clipboard: no files.")
 
     def _handle_clipboard_paths(self, paths: List[Path]) -> None:
         if self.busy or not ensure_paths(self.cfg):
