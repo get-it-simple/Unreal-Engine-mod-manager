@@ -524,8 +524,10 @@ class ModManagerGui(tk.Tk):
         return max(1, int(self.mod_page.get() or 1)), self.label_filter_var.get().strip(), self.search_var.get().strip(), self._mod_order_mode()
 
     def _mod_order_mode(self) -> str:
+        if self.order_var.get().strip() == "Created date":
+            return "cd"
         if self.mod_sort_key == "d":
-            return "cd" if self.order_var.get().strip() == "Created date" else "d"
+            return "d"
         return f"-{self.mod_sort_key}" if self.mod_sort_reverse else self.mod_sort_key
 
     def _preset_order_mode(self) -> str:
