@@ -112,8 +112,6 @@ class ScrollableTabFrame(ttk.Frame):
         self._win_id = self._canvas.create_window((0, 0), window=self.inner, anchor="nw")
         self.inner.bind("<Configure>", self._update_scrollregion)
         self._canvas.bind("<Configure>", self._update_inner_width)
-        self._canvas.bind("<MouseWheel>", lambda e: self.scroll_y(int(-1 * (e.delta / 120))))
-        self.inner.bind("<MouseWheel>", lambda e: self.scroll_y(int(-1 * (e.delta / 120))))
 
     def _update_scrollregion(self, _event=None):
         req_h = self.inner.winfo_reqheight()
@@ -132,16 +130,6 @@ class ScrollableTabFrame(ttk.Frame):
     def scroll_y(self, delta: int) -> None:
         if self.inner.winfo_reqheight() > self._canvas.winfo_height():
             self._canvas.yview_scroll(delta, "units")
-
-    def bind_children_mousewheel(self) -> None:
-        def _bind(w):
-            if not isinstance(w, ttk.Treeview):
-                w.bind("<MouseWheel>", lambda e: self.scroll_y(int(-1 * (e.delta / 120))), add=True)
-            for child in w.winfo_children():
-                _bind(child)
-        for child in self.inner.winfo_children():
-            _bind(child)
-
 
 class _Tooltip:
     _DELAY = 100
@@ -212,6 +200,7 @@ class ModManagerGui(tk.Tk):
         self._scroll_frames: list = []
         self._apply_gui_style()
         self._build()
+        self.bind_all("<MouseWheel>", self._on_mousewheel)
         self.bind_all("<Control-v>", self._handle_paste)
         self.drop_targets.append(WindowsDropTarget(self, self._handle_mods_drop))
         self.drop_targets.append(WindowsDropTarget(self.mods_tree, self._handle_mods_drop))
@@ -233,6 +222,18 @@ class ModManagerGui(tk.Tk):
             self.cfg["window_width"] = w
             self.cfg["window_height"] = h
             save_config(self.cfg)
+
+    def _on_mousewheel(self, event) -> None:
+        w = self.winfo_containing(event.x_root, event.y_root)
+        while w:
+            if isinstance(w, ttk.Treeview):
+                if event.widget is not w:
+                    w.yview_scroll(int(-1 * (event.delta / 120)), "units")
+                return
+            if isinstance(w, ScrollableTabFrame):
+                w.scroll_y(int(-1 * (event.delta / 120)))
+                return
+            w = getattr(w, "master", None)
 
     def _resize_notebook_tabs(self) -> None:
         nb = getattr(self, "notebook", None)
@@ -287,8 +288,6 @@ class ModManagerGui(tk.Tk):
         self._build_presets()
         self._build_settings()
         self._build_broken()
-        for sf in self._scroll_frames:
-            sf.bind_children_mousewheel()
         self.drop_targets = self.drop_targets[:1]
         self.drop_targets.append(WindowsDropTarget(self.mods_tree, self._handle_mods_drop))
         self.after_idle(self._resize_notebook_tabs)
@@ -306,7 +305,9 @@ class ModManagerGui(tk.Tk):
             self.notebook.add(sf, text=text)
             return sf.inner
 
-        self.mods_tab     = _tab("⊞  Mods")
+        mods_outer = ttk.Frame(self.notebook, padding=(4, 6))
+        self.notebook.add(mods_outer, text="⊞  Mods")
+        self.mods_tab = mods_outer
         self.presets_tab  = _tab("☰  Presets")
         self.settings_tab = _tab("⚙  Settings")
         self.broken_tab   = _tab("⚠  Broken")
@@ -314,8 +315,6 @@ class ModManagerGui(tk.Tk):
         self._build_presets()
         self._build_settings()
         self._build_broken()
-        for sf in self._scroll_frames:
-            sf.bind_children_mousewheel()
         status = ttk.Label(root, textvariable=self.status_var, anchor="w")
         status.pack(fill="x", pady=(8, 0))
 
