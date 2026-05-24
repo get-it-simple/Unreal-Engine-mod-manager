@@ -243,6 +243,47 @@ def _extract_virtual(ole32, kernel32, pDataObj, cf_filedesc, cf_filecontents):
     return paths
 
 
+def read_clipboard_paths() -> List[Path]:
+    """Read CF_HDROP file paths from Windows clipboard."""
+    if not is_windows():
+        return []
+    try:
+        user32 = ctypes.windll.user32
+        shell32 = ctypes.windll.shell32
+
+        user32.IsClipboardFormatAvailable.argtypes = [ctypes.c_uint]
+        user32.IsClipboardFormatAvailable.restype = ctypes.c_bool
+        user32.OpenClipboard.argtypes = [ctypes.c_void_p]
+        user32.OpenClipboard.restype = ctypes.c_bool
+        user32.GetClipboardData.argtypes = [ctypes.c_uint]
+        user32.GetClipboardData.restype = ctypes.c_void_p
+        user32.CloseClipboard.restype = ctypes.c_bool
+        shell32.DragQueryFileW.restype = ctypes.c_uint
+        shell32.DragQueryFileW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_wchar_p, ctypes.c_uint]
+
+        if not user32.IsClipboardFormatAvailable(CF_HDROP):
+            return []
+        if not user32.OpenClipboard(None):
+            return []
+        try:
+            hdrop = ctypes.c_void_p(user32.GetClipboardData(CF_HDROP))
+            if not hdrop:
+                return []
+            count = shell32.DragQueryFileW(hdrop, ctypes.c_uint(0xFFFFFFFF), None, 0)
+            paths = []
+            for i in range(count):
+                size = shell32.DragQueryFileW(hdrop, ctypes.c_uint(i), None, 0) + 1
+                buf = ctypes.create_unicode_buffer(size)
+                shell32.DragQueryFileW(hdrop, ctypes.c_uint(i), buf, ctypes.c_uint(size))
+                paths.append(Path(buf.value))
+            return paths
+        finally:
+            user32.CloseClipboard()
+    except Exception as exc:
+        logger.error("clipboard: read failed: %s", exc)
+        return []
+
+
 class WindowsDropTarget:
     def __init__(self, widget, callback: Callable[[List[Path], int, int], None]):
         self.widget = widget

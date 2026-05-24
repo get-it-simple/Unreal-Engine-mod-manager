@@ -27,7 +27,7 @@ from .mods import (
     toggle_mods_by_indexes,
 )
 from .presets import delete_presets_by_indexes, presets_records, presets_view, save_preset_from_installed, toggle_presets_by_indexes
-from .dragdrop import WindowsDropTarget
+from .dragdrop import WindowsDropTarget, read_clipboard_paths
 from .storage import load_config, save_config
 
 class AutocompleteCombobox(ttk.Combobox):
@@ -198,6 +198,7 @@ class ModManagerGui(tk.Tk):
         self._apply_gui_style()
         self._build()
         self.bind_all("<MouseWheel>", self._on_mousewheel)
+        self.bind_all("<Control-v>", self._handle_paste)
         self.drop_targets.append(WindowsDropTarget(self, self._handle_mods_drop))
         self.drop_targets.append(WindowsDropTarget(self.mods_tree, self._handle_mods_drop))
         self.refresh_all()
@@ -669,6 +670,67 @@ class ModManagerGui(tk.Tk):
             self.refresh_mods()
 
         self._run_action("Importing dropped files", worker, done)
+
+    def _handle_paste(self, event=None) -> None:
+        focused = self.focus_get()
+        if isinstance(focused, (tk.Entry, ttk.Entry, ttk.Combobox, tk.Text, ttk.Spinbox)):
+            return
+        try:
+            if self.notebook.index(self.notebook.select()) != 0:
+                return
+        except Exception:
+            return
+        paths = read_clipboard_paths()
+        if not paths:
+            self.status_var.set("Clipboard: no files.")
+            return
+        self._handle_clipboard_paths(paths)
+
+    def _handle_clipboard_paths(self, paths: List[Path]) -> None:
+        if self.busy or not ensure_paths(self.cfg):
+            return
+        image_paths = [p for p in paths if is_image_file(p)]
+        mod_paths = [p for p in paths if is_mod_file(p, self.cfg)]
+        tasks = []
+        if image_paths:
+            indexes = self._selected_indexes(self.mods_tree)
+            default_name = ""
+            if indexes and 1 <= indexes[0] <= len(self.current_mods_shown):
+                default_name = self.current_mods_shown[indexes[0] - 1].name
+            if not default_name:
+                default_name = self._choose_mod_for_image("")
+            if default_name:
+                for path in image_paths:
+                    tasks.append(("image", path, default_name, True))
+        for path in mod_paths:
+            exists = any(m.name == path.name for m in self.current_mod_items)
+            replace = True
+            if exists:
+                replace = messagebox.askyesno("Replace mod", f"Replace existing mod '{path.name}'?")
+            if replace:
+                tasks.append(("mod", path, "", exists))
+        if not tasks:
+            self.status_var.set("Clipboard: no supported files.")
+            return
+
+        def worker():
+            imported = []
+            skipped = []
+            for kind, path, mod_name, replace in tasks:
+                if kind == "image":
+                    ok, msg = import_mod_image(self.cfg, mod_name, path)
+                else:
+                    ok, msg = import_mod_file(self.cfg, path, replace)
+                (imported if ok else skipped).append(msg)
+            return imported, skipped
+
+        def done(result) -> None:
+            imported, skipped = result
+            self.placeholder_images.clear()
+            self.status_var.set(f"Imported: {len(imported)}. Skipped: {len(skipped)}.")
+            self.refresh_mods()
+
+        self._run_action("Importing clipboard files", worker, done)
 
     def _import_paths(self, paths: List[Path]) -> None:
         if self.busy or not ensure_paths(self.cfg):

@@ -66,7 +66,7 @@ def _init() -> bool:
     return _GDI_READY
 
 
-def load_scaled(path: Path, max_w: int, max_h: int) -> tk.PhotoImage | None:
+def _load_scaled_gdi(path: Path, max_w: int, max_h: int) -> tk.PhotoImage | None:
     if not _init():
         return None
     try:
@@ -125,7 +125,26 @@ def load_scaled(path: Path, max_w: int, max_h: int) -> tk.PhotoImage | None:
         return None
 
 
-def save_as_png(src: Path, dst: Path) -> bool:
+def _load_scaled_pillow(path: Path, max_w: int, max_h: int) -> tk.PhotoImage | None:
+    try:
+        import io
+        from PIL import Image
+        with Image.open(str(path)) as im:
+            orig_w, orig_h = im.size
+            if not orig_w or not orig_h:
+                return None
+            scale = min(max_w / orig_w, max_h / orig_h)
+            tw = max(1, int(orig_w * scale))
+            th = max(1, int(orig_h * scale))
+            im = im.convert("RGB").resize((tw, th), Image.LANCZOS)
+            buf = io.BytesIO()
+            im.save(buf, format="PNG")
+            return tk.PhotoImage(data=base64.b64encode(buf.getvalue()).decode())
+    except Exception:
+        return None
+
+
+def _save_as_png_gdi(src: Path, dst: Path) -> bool:
     if not _init():
         return False
     try:
@@ -139,3 +158,21 @@ def save_as_png(src: Path, dst: Path) -> bool:
             gdi.GdipDisposeImage(bmp)
     except Exception:
         return False
+
+
+def _save_as_png_pillow(src: Path, dst: Path) -> bool:
+    try:
+        from PIL import Image
+        with Image.open(str(src)) as im:
+            im.save(str(dst), format="PNG")
+        return True
+    except Exception:
+        return False
+
+
+def load_scaled(path: Path, max_w: int, max_h: int) -> tk.PhotoImage | None:
+    return _load_scaled_gdi(path, max_w, max_h) or _load_scaled_pillow(path, max_w, max_h)
+
+
+def save_as_png(src: Path, dst: Path) -> bool:
+    return _save_as_png_gdi(src, dst) or _save_as_png_pillow(src, dst)
