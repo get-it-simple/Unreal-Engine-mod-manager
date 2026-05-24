@@ -171,9 +171,12 @@ class ModManagerGui(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Mod Manager")
-        self.geometry("980x640")
-        self.minsize(880, 560)
         self.cfg = load_config()
+        w = max(880, int(self.cfg.get("window_width", 1200)))
+        h = max(560, int(self.cfg.get("window_height", 750)))
+        self.geometry(f"{w}x{h}")
+        self.minsize(880, 560)
+        self._resize_job = None
         self.mod_page = tk.IntVar(value=1)
         self.preset_page = tk.IntVar(value=1)
         self.search_var = tk.StringVar()
@@ -201,7 +204,24 @@ class ModManagerGui(tk.Tk):
         self.bind_all("<Control-v>", self._handle_paste)
         self.drop_targets.append(WindowsDropTarget(self, self._handle_mods_drop))
         self.drop_targets.append(WindowsDropTarget(self.mods_tree, self._handle_mods_drop))
+        self.bind("<Configure>", self._on_window_configure)
         self.refresh_all()
+
+    def _on_window_configure(self, event) -> None:
+        if event.widget is not self:
+            return
+        if self._resize_job:
+            self.after_cancel(self._resize_job)
+        self._resize_job = self.after(500, self._save_window_size)
+
+    def _save_window_size(self) -> None:
+        self._resize_job = None
+        w = self.winfo_width()
+        h = self.winfo_height()
+        if w > 0 and h > 0:
+            self.cfg["window_width"] = w
+            self.cfg["window_height"] = h
+            save_config(self.cfg)
 
     def _on_mousewheel(self, event) -> None:
         w = event.widget
@@ -471,6 +491,8 @@ class ModManagerGui(tk.Tk):
             ("ui_scale_percent", "UI Scale"),
             ("gui_font_family", "Font"),
             ("gui_font_size", "Font size"),
+            ("window_width", "Window width"),
+            ("window_height", "Window height"),
         ]
         preview_keys = {"mod_extensions", "link_prefix"}
         for row, (key, label) in enumerate(rows):
@@ -1044,7 +1066,7 @@ class ModManagerGui(tk.Tk):
 
         def worker():
             for key, value in values.items():
-                if key in ["page_size", "max_mod_name_len", "max_preset_name_len", "max_label_name_len", "ui_scale_percent", "gui_font_size"]:
+                if key in ["page_size", "max_mod_name_len", "max_preset_name_len", "max_label_name_len", "ui_scale_percent", "gui_font_size", "window_width", "window_height"]:
                     numeric = value.rstrip("%")
                     if numeric.isdigit():
                         self.cfg[key] = int(numeric)
@@ -1055,6 +1077,9 @@ class ModManagerGui(tk.Tk):
 
         def done(msg) -> None:
             self._rebuild_tabs()
+            w = max(880, int(self.cfg.get("window_width", 1200)))
+            h = max(560, int(self.cfg.get("window_height", 750)))
+            self.geometry(f"{w}x{h}")
             self.status_var.set(msg)
             self.refresh_all()
 

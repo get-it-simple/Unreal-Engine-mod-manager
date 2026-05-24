@@ -31,5 +31,7 @@ DEFAULT_CONFIG = {
     "button_size_percent": 100,
     "gui_font_family": "",
     "gui_font_size": 10,
-    "placeholder_image_col_width": 56
+    "placeholder_image_col_width": 56,
+    "window_width": 1200,
+    "window_height": 750,
 }
