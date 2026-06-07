@@ -266,7 +266,7 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(self.app.tile_selected_index, 0)
         detail_text = " ".join(self.widget_texts(self.app.detail_frame))
         self.assertIn("combat.pak", detail_text)
-        self.assertIn("Installed", detail_text)
+        self.assertIn("Uninstall", detail_text)
         self.assertIn("2026-01-01 10:00:00", detail_text)
 
     def test_tile_detail_label_button_toggles_label_filter(self):

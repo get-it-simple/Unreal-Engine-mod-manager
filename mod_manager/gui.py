@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import io
+import locale as _locale
 import queue
 import threading
 import tkinter as tk
@@ -11,7 +12,19 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Callable, Dict, List
 
-from .cli_utils import ensure_paths, open_folder
+
+def _sys_str(key: str) -> str:
+    try:
+        lang = (_locale.getdefaultlocale()[0] or "en").split("_")[0].lower()
+    except Exception:
+        lang = "en"
+    _T: dict[str, dict[str, str]] = {
+        "install":   {"uk": "Встановити", "ru": "Установить", "de": "Installieren", "fr": "Installer", "pl": "Zainstaluj", "it": "Installa", "es": "Instalar"},
+        "uninstall": {"uk": "Видалити",   "ru": "Удалить",    "de": "Deinstallieren", "fr": "Désinstaller", "pl": "Odinstaluj", "it": "Disinstalla", "es": "Desinstalar"},
+    }
+    return _T.get(key, {}).get(lang, key.capitalize())
+
+from .cli_utils import ensure_paths, open_folder, select_in_explorer
 from .image import load_scaled as _load_image_gdi
 from .log import logger
 from .mods import (
@@ -204,6 +217,7 @@ class ModManagerGui(tk.Tk):
         self.tile_columns = 1
         self.tile_canvas_width = 0
         self.tile_selected_index = 0
+        self.tile_selected_indices: set = set()
         self.tile_rendered_range = (0, 0)
         self.list_render_offset = 0
         self.list_selected_index = 0
@@ -216,6 +230,14 @@ class ModManagerGui(tk.Tk):
         self._tile_worker_thread: threading.Thread | None = None
         self._tile_worker_version: int = 0
         self._tile_result_poll_job: str | None = None
+        self._detail_pil_cache: dict = {}
+        self._detail_img_mod: str | None = None
+        self._detail_img_frame: tk.Widget | None = None
+        self._detail_img_label: tk.Widget | None = None
+        self._detail_img_photo: tk.PhotoImage | None = None
+        self._detail_img_resize_job: str | None = None
+        self._view_btn_list: tk.Button | None = None
+        self._view_btn_tiles: tk.Button | None = None
         self.detail_wrap_labels = []
         self.updating_mod_selection = False
         self.mod_sort_key = self.cfg.get("mod_sort_key", "d")
@@ -259,6 +281,19 @@ class ModManagerGui(tk.Tk):
         if self._tile_result_poll_job:
             self.after_cancel(self._tile_result_poll_job)
         self._pool.shutdown()
+        try:
+            if self._is_tile_view():
+                sash = self.tile_pane.sashpos(0)
+                total = self.tile_pane.winfo_width()
+                if total > 0:
+                    list_w = sash
+                    detail_w = total - sash
+                    if list_w >= 80 and detail_w >= 80:
+                        self.cfg["_tile_list_width"] = list_w
+                        self.cfg["_tile_detail_width"] = detail_w
+                        save_config(self.cfg)
+        except Exception:
+            pass
         self.destroy()
 
     def _safe_bind_all(self, sequence: str, callback: Callable) -> None:
@@ -415,6 +450,7 @@ class ModManagerGui(tk.Tk):
         self.tile_rendered_range = (0, 0)
         self._tile_details_done.clear()
         self._tile_img_cache.clear()
+        self._detail_pil_cache.clear()
         self._tile_worker_version += 1
         try:
             while True:
@@ -474,14 +510,27 @@ class ModManagerGui(tk.Tk):
         tree = getattr(self, "mods_tree", None)
         if not tree or self.busy or self.updating_mod_selection:
             return
-        selection = tree.selection()
-        if selection and str(selection[0]).isdigit():
-            index = int(selection[0]) - 1
-            if 0 <= index < len(self.current_mods_shown):
-                self.list_selected_index = index
-                self.tile_selected_index = index
-                self._refresh_mod_detail(self.current_mods_shown[index])
-        state = "normal" if selection else "disabled"
+        if self._is_tile_view():
+            valid = [i for i in sorted(self.tile_selected_indices) if 0 <= i < len(self.current_mods_shown)]
+            n = len(valid)
+            if n == 0:
+                self._refresh_mod_detail(None)
+                state = "disabled"
+            elif n == 1:
+                self._refresh_mod_detail(self.current_mods_shown[valid[0]])
+                state = "normal"
+            else:
+                self._refresh_multi_detail([self.current_mods_shown[i] for i in valid])
+                state = "normal"
+        else:
+            selection = tree.selection()
+            if selection and str(selection[0]).isdigit():
+                index = int(selection[0]) - 1
+                if 0 <= index < len(self.current_mods_shown):
+                    self.list_selected_index = index
+                    self.tile_selected_index = index
+                    self._refresh_mod_detail(self.current_mods_shown[index])
+            state = "normal" if selection else "disabled"
         for w in self.mod_selection_widgets:
             try:
                 w.configure(state=state)
@@ -539,10 +588,15 @@ class ModManagerGui(tk.Tk):
         top.add(self.label_filter_box, padx=(6, 12))
         top.add(ttk.Label(top, text="Order"))
         top.add(ttk.Combobox(top, textvariable=self.order_var, values=["Default", "Created date"], width=14, state="readonly"), padx=(6, 12))
-        top.add(ttk.Label(top, text="View"))
-        view_box = ttk.Combobox(top, textvariable=self.mod_view_mode, values=["list", "tiles"], width=8, state="readonly")
-        view_box.bind("<<ComboboxSelected>>", lambda _event: self._on_mod_view_mode_changed())
-        top.add(view_box, padx=(6, 12))
+        self._view_btn_list = tk.Button(top, text="☰", width=2, relief="groove", cursor="hand2",
+                                        command=lambda: self._set_view_mode("list"))
+        _Tooltip(self._view_btn_list, "List view")
+        self._view_btn_tiles = tk.Button(top, text="⊞", width=2, relief="groove", cursor="hand2",
+                                         command=lambda: self._set_view_mode("tiles"))
+        _Tooltip(self._view_btn_tiles, "Tile view")
+        top.add(self._view_btn_list, padx=(6, 0))
+        top.add(self._view_btn_tiles, padx=(2, 12))
+        self._update_view_buttons()
         top.add(self._button(top, "↺", self._mods_search, "Search / Refresh"))
         top.add(self._button(top, "✕", self._mods_clear, "Clear"), padx=(6, 0))
         self.mods_view_area = ttk.Frame(self.mods_tab)
@@ -738,8 +792,28 @@ class ModManagerGui(tk.Tk):
             self.mod_view_mode.set(mode)
         self.cfg["mod_view_mode"] = mode
         save_config(self.cfg)
+        self._update_view_buttons()
         self._show_mod_view()
         self.refresh_mods()
+
+    def _set_view_mode(self, mode: str) -> None:
+        self.mod_view_mode.set(mode)
+        self._on_mod_view_mode_changed()
+
+    def _update_view_buttons(self) -> None:
+        mode = self.mod_view_mode.get()
+        for btn, bmode in [(self._view_btn_list, "list"), (self._view_btn_tiles, "tiles")]:
+            if btn is None:
+                continue
+            try:
+                if not btn.winfo_exists():
+                    continue
+            except tk.TclError:
+                continue
+            if mode == bmode:
+                btn.configure(bg="#0078d4", fg="white", relief="flat")
+            else:
+                btn.configure(bg="SystemButtonFace", fg="SystemButtonText", relief="groove")
 
     def _show_mod_view(self) -> None:
         if not hasattr(self, "mods_tree"):
@@ -747,7 +821,10 @@ class ModManagerGui(tk.Tk):
         self.mods_list_frame.pack_forget()
         self.tile_pane.pack_forget()
         if self._is_tile_view():
+            self._sash_default_retried = 0
             self.tile_pane.pack(in_=self.mods_view_area, fill="both", expand=True)
+            self.after_idle(self._restore_tile_sash)
+            self.after(200, self._restore_tile_sash)
             self._refresh_mod_tiles()
         else:
             self.mods_list_frame.pack(in_=self.mods_view_area, fill="both", expand=True)
@@ -1041,46 +1118,68 @@ class ModManagerGui(tk.Tk):
         end = min(total, (last_row + 1) * columns)
         return start, end
 
-    def _select_tile_index(self, index: int) -> None:
+    def _set_tile_bg(self, actual_index: int, selected: bool) -> None:
+        entry = self.tile_windows.get(actual_index)
+        if entry is None:
+            return
+        frame, _ = entry
+        mod = self.current_mods_shown[actual_index] if actual_index < len(self.current_mods_shown) else None
+        bg = "#cfe8ff" if selected else ("#d4edda" if mod and mod.installed else "#f7f7f7")
+        hl = "#3777b8" if selected else bg
+        frame.configure(bg=bg, highlightbackground=hl)
+        for child in frame.winfo_children():
+            try:
+                child.configure(bg=bg)
+            except tk.TclError:
+                pass
+
+    def _select_tile_index(self, index: int, event=None) -> None:
         if not self.current_mods_shown:
             self.tile_selected_index = 0
+            self.tile_selected_indices.clear()
             self.mods_tree.selection_remove(self.mods_tree.selection())
-            self._refresh_mod_detail(None)
+            self._on_mod_selection_changed()
             return
-        index = max(0, min(index, len(self.current_mods_shown) - 1))
-        prev_index = self.tile_selected_index
-        self.tile_selected_index = index
-        self.list_selected_index = index
-        iid = str(index + 1)
-        if iid in self.mods_tree.get_children():
-            self.updating_mod_selection = True
-            try:
-                self.mods_tree.selection_set(iid)
-                self.mods_tree.focus(iid)
-                self.mods_tree.see(iid)
-            finally:
-                self.updating_mod_selection = False
+        total = len(self.current_mods_shown)
+        index = max(0, min(index, total - 1))
 
-        def _set_tile_bg(actual_index: int, selected: bool) -> None:
-            entry = self.tile_windows.get(actual_index)
-            if entry is None:
-                return
-            frame, _ = entry
-            mod = self.current_mods_shown[actual_index] if actual_index < len(self.current_mods_shown) else None
-            bg = "#cfe8ff" if selected else ("#d4edda" if mod and mod.installed else "#f7f7f7")
-            hl = "#3777b8" if selected else bg
-            frame.configure(bg=bg, highlightbackground=hl)
-            for child in frame.winfo_children():
+        ctrl = bool(event and event.state & 0x0004)
+        shift = bool(event and event.state & 0x0001)
+
+        prev_selected = set(self.tile_selected_indices)
+
+        if ctrl:
+            if index in self.tile_selected_indices:
+                self.tile_selected_indices.discard(index)
+            else:
+                self.tile_selected_indices.add(index)
+            self.tile_selected_index = index
+        elif shift and self.tile_selected_indices:
+            anchor = self.tile_selected_index
+            lo, hi = min(anchor, index), max(anchor, index)
+            self.tile_selected_indices = set(range(lo, hi + 1))
+        else:
+            self.tile_selected_indices = {index}
+            self.tile_selected_index = index
+
+        self.list_selected_index = self.tile_selected_index
+        if len(self.tile_selected_indices) == 1:
+            iid = str(self.tile_selected_index + 1)
+            if iid in self.mods_tree.get_children():
+                self.updating_mod_selection = True
                 try:
-                    child.configure(bg=bg)
-                except tk.TclError:
-                    pass
+                    self.mods_tree.selection_set(iid)
+                    self.mods_tree.focus(iid)
+                    self.mods_tree.see(iid)
+                finally:
+                    self.updating_mod_selection = False
 
-        if prev_index != index:
-            _set_tile_bg(prev_index, False)
-        _set_tile_bg(index, True)
+        changed = prev_selected.symmetric_difference(self.tile_selected_indices)
+        for i in changed:
+            self._set_tile_bg(i, i in self.tile_selected_indices)
+
         self._scroll_tile_to_visible(index)
-        self._refresh_mod_detail(self.current_mods_shown[index])
+        self._on_mod_selection_changed()
 
     def _scroll_tile_to_visible(self, index: int) -> None:
         if not hasattr(self, "tile_canvas"):
@@ -1160,13 +1259,12 @@ class ModManagerGui(tk.Tk):
             except tk.TclError:
                 pass
 
-        sel = self.tile_selected_index
         for index in range(start, end):
             if index in self.tile_windows:
                 continue
             mod = self.current_mods_shown[index]
             row, col = divmod(index, columns)
-            selected = (index == sel)
+            selected = (index in self.tile_selected_indices)
             mod_bg = "#d4edda" if mod.installed else "#f7f7f7"
             bg = "#cfe8ff" if selected else mod_bg
             hl = "#3777b8" if selected else bg
@@ -1176,7 +1274,7 @@ class ModManagerGui(tk.Tk):
             x = col * (frame_w + 12) + 6
             y = row * row_h + 6
             wid = self.tile_canvas.create_window(x, y, window=frame, anchor="nw", width=frame_w, height=frame_h)
-            frame.bind("<Button-1>", lambda _event, i=index: self._select_tile_index(i))
+            frame.bind("<Button-1>", lambda e, i=index: self._select_tile_index(i, e))
             frame.bind("<Double-1>", lambda _event: self._toggle_selected_mods())
             self.tile_windows[index] = (frame, wid)
             if (mod.name, size) in self._tile_img_cache:
@@ -1281,6 +1379,7 @@ class ModManagerGui(tk.Tk):
         except Exception:
             line_h = 16
         name_h = line_h * 2 + 4
+        btn_h = getattr(self, "_tile_btn_h", None) or max(22, line_h + 6)
         image_label = tk.Label(frame, image=img, bg=bg)
         image_label.image = img
         image_label.place(x=(frame_w - size) // 2, y=6, width=size, height=size)
@@ -1288,7 +1387,7 @@ class ModManagerGui(tk.Tk):
         name_label = tk.Label(frame, text=title, bg=bg, wraplength=frame_w - 16, justify="center", anchor="n")
         name_label.place(x=4, y=size + 12, width=frame_w - 8, height=name_h)
         for widget in [image_label, name_label]:
-            widget.bind("<Button-1>", lambda _event, i=index: self._select_tile_index(i))
+            widget.bind("<Button-1>", lambda e, i=index: self._select_tile_index(i, e))
             widget.bind("<Double-1>", lambda _event: self._toggle_selected_mods())
         self._tile_details_done.add(index)
 
@@ -1296,6 +1395,21 @@ class ModManagerGui(tk.Tk):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="nw", pady=2)
         value_label = ttk.Label(parent, text=value, wraplength=max(120, parent.winfo_width() - 120), justify="left")
         value_label.grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=2)
+        parent.columnconfigure(1, weight=1)
+        self.detail_wrap_labels.append(value_label)
+
+    def _detail_path_row(self, parent, label: str, path: Path, row: int) -> None:
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="nw", pady=2)
+        value_label = ttk.Label(
+            parent,
+            text=str(path),
+            wraplength=max(120, parent.winfo_width() - 120),
+            justify="left",
+            cursor="hand2",
+            foreground="#0063b1",
+        )
+        value_label.grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=2)
+        value_label.bind("<Button-1>", lambda _e, p=path: select_in_explorer(p))
         parent.columnconfigure(1, weight=1)
         self.detail_wrap_labels.append(value_label)
 
@@ -1328,9 +1442,52 @@ class ModManagerGui(tk.Tk):
         label_button.grid(row=row, column=1, sticky="w", padx=(8, 0), pady=2)
         parent.columnconfigure(1, weight=1)
 
+    def _refresh_multi_detail(self, mods: list) -> None:
+        if not hasattr(self, "detail_frame"):
+            return
+        if self._detail_img_resize_job:
+            self.after_cancel(self._detail_img_resize_job)
+            self._detail_img_resize_job = None
+        self._detail_img_mod = None
+        self._detail_img_frame = None
+        self._detail_img_label = None
+        for child in self.detail_frame.winfo_children():
+            child.destroy()
+        self.detail_wrap_labels = []
+        n = len(mods)
+        installed = sum(1 for m in mods if m.installed)
+        not_installed = n - installed
+        ttk.Label(
+            self.detail_frame,
+            text=f"{n} mods selected",
+            font=("TkDefaultFont", 12, "bold"),
+        ).pack(anchor="w", fill="x")
+        info = ttk.Frame(self.detail_frame)
+        info.pack(fill="x", pady=(8, 0))
+        if installed:
+            ttk.Label(info, text=f"✓ {installed} installed").pack(anchor="w")
+        if not_installed:
+            ttk.Label(info, text=f"○ {not_installed} not installed").pack(anchor="w")
+        tk.Button(
+            self.detail_frame,
+            text=_sys_str("install") if not_installed else _sys_str("uninstall"),
+            bg="#28a745" if not_installed else "#c0392b",
+            fg="white",
+            activebackground="#1e7e34" if not_installed else "#a93226",
+            activeforeground="white",
+            relief="flat", bd=0, cursor="hand2",
+            command=self._toggle_selected_mods,
+        ).pack(fill="x", pady=(10, 0))
+
     def _refresh_mod_detail(self, mod: ModItem | None) -> None:
         if not hasattr(self, "detail_frame"):
             return
+        if self._detail_img_resize_job:
+            self.after_cancel(self._detail_img_resize_job)
+            self._detail_img_resize_job = None
+        self._detail_img_mod = None
+        self._detail_img_frame = None
+        self._detail_img_label = None
         for child in self.detail_frame.winfo_children():
             child.destroy()
         self.detail_wrap_labels = []
@@ -1338,33 +1495,36 @@ class ModManagerGui(tk.Tk):
             ttk.Label(self.detail_frame, text="No mod selected").pack(anchor="w")
             return
         rec = self.current_mod_records.get(mod.name, {})
-        title = f"✓ {mod.name}" if mod.installed else mod.name
-        ttk.Label(self.detail_frame, text=title, font=("TkDefaultFont", 12, "bold")).pack(anchor="w", fill="x")
+        ttk.Label(self.detail_frame, text=mod.name, font=("TkDefaultFont", 12, "bold")).pack(anchor="w", fill="x")
+        btn_text = _sys_str("uninstall") if mod.installed else _sys_str("install")
+        btn_bg = "#c0392b" if mod.installed else "#28a745"
+        btn_active = "#a93226" if mod.installed else "#1e7e34"
+        tk.Button(
+            self.detail_frame, text=btn_text, bg=btn_bg, fg="white",
+            activebackground=btn_active, activeforeground="white",
+            relief="flat", bd=0, cursor="hand2",
+            command=self._toggle_selected_mods,
+        ).pack(fill="x", pady=(8, 0))
         status = ttk.Frame(self.detail_frame)
         status.pack(fill="x", pady=(10, 0))
         label_value = self.current_mod_labels.get(mod.name) or "-"
         rows = [
-            ("State", "Installed" if mod.installed else "Not installed"),
             ("Type", "Folder" if mod.is_dir else "File"),
             ("Last managed", rec.get("last_managed") or "-"),
-            ("Source", str(mod.src)),
-            ("Destination", str(mod.dest)),
         ]
-        for row, (label, value) in enumerate(rows[:2]):
+        self._detail_row(status, rows[0][0], rows[0][1], 0)
+        self._detail_label_row(status, label_value, 1)
+        for row, (label, value) in enumerate(rows[1:], start=2):
             self._detail_row(status, label, value, row)
-        self._detail_label_row(status, label_value, 2)
-        for row, (label, value) in enumerate(rows[2:], start=3):
-            self._detail_row(status, label, value, row)
-        description = ttk.LabelFrame(self.detail_frame, text="Description", padding=(8, 6))
-        description.pack(fill="both", expand=True, pady=(12, 0))
-        text = (
-            f"{mod.name} is {'installed through a link in the game mods folder' if mod.installed else 'available in the source mods folder'}."
-            " No separate mod description metadata is stored yet."
-        )
-        desc = ttk.Label(description, text=text, wraplength=max(180, self.detail_frame.winfo_width() - 30), justify="left")
-        desc.pack(fill="both", expand=True)
-        self.detail_wrap_labels.append(desc)
-        self._update_detail_wrap()
+        base = 2 + len(rows[1:])
+        self._detail_path_row(status, "Source", mod.src, base)
+        self._detail_path_row(status, "Destination", mod.dest, base + 1)
+        img_container = ttk.Frame(self.detail_frame)
+        img_container.pack(fill="both", expand=True, pady=(12, 0))
+        self._detail_img_mod = mod.name
+        self._detail_img_frame = img_container
+        img_container.bind("<Configure>", self._on_detail_img_resize)
+        self.after_idle(self._do_detail_img_render)
 
     def _update_detail_wrap(self, _event=None) -> None:
         if not hasattr(self, "detail_frame"):
@@ -1375,6 +1535,100 @@ class ModManagerGui(tk.Tk):
                 label.configure(wraplength=wrap)
             except tk.TclError:
                 pass
+
+    def _on_detail_img_resize(self, _event=None) -> None:
+        if self._detail_img_resize_job:
+            self.after_cancel(self._detail_img_resize_job)
+        self._detail_img_resize_job = self.after(50, self._do_detail_img_render)
+
+    def _do_detail_img_render(self) -> None:
+        self._detail_img_resize_job = None
+        frame = self._detail_img_frame
+        mod_name = self._detail_img_mod
+        if not frame or not mod_name:
+            return
+        try:
+            if not frame.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        w = frame.winfo_width()
+        h = frame.winfo_height()
+        if w <= 4 or h <= 4:
+            return
+        img_path = mod_image_path(self.cfg, mod_name)
+        if not img_path or not Path(img_path).exists():
+            if not frame.winfo_children():
+                ttk.Label(frame, text="No image", anchor="center").pack(fill="both", expand=True)
+            return
+        photo = self._render_detail_photo(mod_name, str(img_path), w, h)
+        if photo is None:
+            return
+        existing = frame.winfo_children()
+        if existing and isinstance(existing[0], tk.Label):
+            try:
+                existing[0].configure(image=photo)
+                existing[0].image = photo
+            except tk.TclError:
+                existing = []
+        if not existing or not isinstance(existing[0], tk.Label):
+            for child in frame.winfo_children():
+                try:
+                    child.destroy()
+                except tk.TclError:
+                    pass
+            lbl = tk.Label(frame, image=photo, bg="black")
+            lbl.image = photo
+            lbl.pack(fill="both", expand=True)
+            self._detail_img_label = lbl
+        self._detail_img_photo = photo
+
+    def _render_detail_photo(self, mod_name: str, img_path: str, max_w: int, max_h: int) -> tk.PhotoImage | None:
+        pil_img = self._detail_pil_cache.get(mod_name)
+        if pil_img is None:
+            try:
+                from PIL import Image as _PILImage
+                with _PILImage.open(img_path) as im:
+                    im.load()
+                    pil_img = im.copy()
+                self._detail_pil_cache[mod_name] = pil_img
+            except Exception:
+                pass
+        if pil_img is not None:
+            try:
+                from PIL import Image as _PILImage
+                orig_w, orig_h = pil_img.size
+                if orig_w and orig_h:
+                    scale = min(max_w / orig_w, max_h / orig_h)
+                    tw = max(1, int(orig_w * scale))
+                    th = max(1, int(orig_h * scale))
+                    resized = pil_img.convert("RGB").resize((tw, th), _PILImage.LANCZOS)
+                    buf = io.BytesIO()
+                    resized.save(buf, format="PNG")
+                    return tk.PhotoImage(data=base64.b64encode(buf.getvalue()).decode())
+            except Exception:
+                pass
+        return _load_image_gdi(Path(img_path), max_w, max_h)
+
+    def _restore_tile_sash(self) -> None:
+        if not hasattr(self, "tile_pane"):
+            return
+        try:
+            total = self.tile_pane.winfo_width()
+            if total <= 1:
+                retries = getattr(self, "_sash_default_retried", 0)
+                if retries < 8:
+                    self._sash_default_retried = retries + 1
+                    self.after(150, self._restore_tile_sash)
+                return
+            detail_w = self.cfg.get("_tile_detail_width")
+            if detail_w and int(detail_w) >= 80:
+                sash = max(120, total - int(detail_w))
+            else:
+                sash = int(total * 0.6)
+            self.tile_pane.sashpos(0, sash)
+        except Exception:
+            pass
 
     def _handle_mods_drop(self, paths, x: int, y: int) -> None:
         if self.busy or not ensure_paths(self.cfg):
@@ -1594,9 +1848,15 @@ class ModManagerGui(tk.Tk):
             if selected:
                 self.list_selected_index = max(0, int(selected[0]) - 1)
                 self.tile_selected_index = max(0, int(selected[0]) - 1)
+                self.tile_selected_indices = {int(i) - 1 for i in selected}
+            else:
+                self.tile_selected_indices = {self.tile_selected_index} if shown else set()
         elif shown and not self.mods_tree.selection():
             self.list_selected_index = min(self.list_selected_index, len(shown) - 1)
             self.tile_selected_index = min(self.tile_selected_index, len(shown) - 1)
+            self.tile_selected_indices = {self.tile_selected_index}
+        else:
+            self.tile_selected_indices = {self.tile_selected_index} if shown else set()
         if self.list_selected_index < self.list_render_offset or self.list_selected_index >= self.list_render_offset + self._list_visible_rows():
             self.list_render_offset = max(0, min(self.list_selected_index, max(0, len(shown) - self._list_visible_rows())))
         self.search_box.set_completion_values([m.name for m in items])
@@ -1641,7 +1901,8 @@ class ModManagerGui(tk.Tk):
 
     def _selected_indexes(self, tree: ttk.Treeview) -> List[int]:
         if tree is getattr(self, "mods_tree", None) and self._is_tile_view():
-            return [self.tile_selected_index + 1] if self.current_mods_shown else []
+            total = len(self.current_mods_shown)
+            return sorted(i + 1 for i in self.tile_selected_indices if 0 <= i < total)
         return [int(iid) for iid in tree.selection() if str(iid).isdigit()]
 
     def _mods_search(self) -> None:

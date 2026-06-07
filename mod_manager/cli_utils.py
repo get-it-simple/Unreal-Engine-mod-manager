@@ -82,6 +82,29 @@ def print_pager(pages: int, current: int):
     for i in range(0, len(labels), 10):
         print(" ".join(labels[i:i+10]))
 
+def select_in_explorer(path: Path) -> None:
+    target = Path(path)
+    try:
+        if is_windows():
+            if target.exists():
+                subprocess.Popen(
+                    ["explorer", f"/select,{target}"],
+                    creationflags=0x08000000,
+                )
+            elif target.parent.exists():
+                subprocess.Popen(
+                    ["explorer", str(target.parent)],
+                    creationflags=0x08000000,
+                )
+        elif platform.system() == "Darwin":
+            if target.exists():
+                subprocess.Popen(["open", "-R", str(target)])
+            elif target.parent.exists():
+                subprocess.Popen(["open", str(target.parent)])
+    except Exception:
+        pass
+
+
 def open_folder(path_str: str) -> Tuple[bool, str]:
     try:
         if not path_str:
