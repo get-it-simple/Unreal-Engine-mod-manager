@@ -12,6 +12,8 @@ A symlink-based mod manager for Unreal Engine games. Manages mods as symbolic li
 - Pagination, search, and ordering
 - Broken link detection and cleanup
 - GUI (tkinter) and CLI interfaces
+- Drag, drop, paste, or pick mod files/folders in the GUI
+- Optional local artwork for mods
 
 ---
 
@@ -29,6 +31,27 @@ python mod-manager.py gui
 ```
 
 > **Windows note:** Directory junctions do not require elevation. For file symlinks, Administrator rights may be needed if the account lacks the *Create symbolic links* privilege — this can be avoided by enabling [Developer Mode](https://learn.microsoft.com/en-us/windows/apps/get-started/enable-your-device-for-development).
+
+---
+
+## Data Files
+
+- `config.json` stores application settings.
+- `presets.json` stores named mod sets.
+- `labels.json` stores labels plus last-managed metadata.
+- `<mods_source_dir>/images` stores optional mod artwork and is not treated as a mod folder.
+
+---
+
+## Tests
+
+Run the full test suite with:
+
+```bash
+python -B -m unittest discover -s tests -p "test_*.py"
+```
+
+The tests cover CLI request parsing and dispatch, the `python mod-manager.py` launcher modes, and core tkinter GUI flows with filesystem, dialogs, and link operations patched out. The `-B` flag prevents Python bytecode cache files from being written during the run.
 
 ---
 

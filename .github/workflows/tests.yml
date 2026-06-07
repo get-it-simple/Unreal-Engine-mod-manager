@@ -1,0 +1,45 @@
+name: Tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  unittest:
+    name: Python unittest
+    runs-on: windows-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+          check-latest: true
+
+      - name: Install dependencies
+        run: python -m pip install --no-cache-dir -r requirements.txt
+
+      - name: Run tests
+        run: python -B -m unittest discover -s tests -p "test_*.py"
+
+      - name: Verify no Python caches
+        shell: pwsh
+        run: |
+          $caches = Get-ChildItem -Path . -Recurse -Force -Include __pycache__,*.pyc,*.pyo |
+            Where-Object { $_.FullName -notmatch '\\.git\\' }
+          if ($caches) {
+            $caches.FullName
+            exit 1
+          }

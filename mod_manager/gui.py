@@ -523,7 +523,7 @@ class ModManagerGui(tk.Tk):
                 preview_lbl = ttk.Label(cell, foreground="#888888")
                 preview_lbl.pack(anchor="w", pady=(2, 0))
                 cell.grid(row=row, column=1, sticky="ew", padx=8, pady=4)
-                def _update(_, k=key, v=var, lbl=preview_lbl):
+                def _update(*_, k=key, v=var, lbl=preview_lbl):
                     lbl.config(text=self._setting_preview_text(k, v.get().strip()))
                 var.trace_add("write", _update)
                 _update(None)

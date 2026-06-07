@@ -3,6 +3,7 @@ presets.json
 .vscode/*
 labels.json
 __pycache__/*
+*/__pycache__/*
 mod_manager/__pycache__/*
 dist
 build
