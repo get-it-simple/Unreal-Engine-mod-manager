@@ -85,12 +85,57 @@ def print_pager(pages: int, current: int):
 def _windows_explorer_select_arg(target: Path) -> str:
     return f'/select,"{target}"'
 
+def _windows_shell_select_path(target: Path) -> bool:
+    try:
+        import ctypes
+        import ctypes.wintypes
+
+        ole32 = ctypes.windll.ole32
+        shell32 = ctypes.windll.shell32
+        pidl = ctypes.c_void_p()
+        attrs = ctypes.c_ulong(0)
+        co_initialized = False
+
+        ole32.CoInitialize.argtypes = [ctypes.c_void_p]
+        ole32.CoInitialize.restype = ctypes.c_long
+        ole32.CoUninitialize.argtypes = []
+        ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+        shell32.SHParseDisplayName.argtypes = [
+            ctypes.wintypes.LPCWSTR,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_ulong,
+            ctypes.POINTER(ctypes.c_ulong),
+        ]
+        shell32.SHParseDisplayName.restype = ctypes.c_long
+        shell32.SHOpenFolderAndSelectItems.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_ulong]
+        shell32.SHOpenFolderAndSelectItems.restype = ctypes.c_long
+
+        co_hr = ole32.CoInitialize(None)
+        co_initialized = co_hr in (0, 1)
+        parse_hr = shell32.SHParseDisplayName(str(target), None, ctypes.byref(pidl), 0, ctypes.byref(attrs))
+        if parse_hr != 0 or not pidl.value:
+            return False
+        return shell32.SHOpenFolderAndSelectItems(pidl, 0, None, 0) == 0
+    except Exception:
+        return False
+    finally:
+        try:
+            if "pidl" in locals() and pidl.value:
+                ole32.CoTaskMemFree(pidl)
+            if "co_initialized" in locals() and co_initialized:
+                ole32.CoUninitialize()
+        except Exception:
+            pass
+
 def select_in_explorer(path: Path) -> None:
     target = Path(path).expanduser()
     try:
         if is_windows():
             target = target.absolute()
             if target.exists() or target.is_symlink():
+                if _windows_shell_select_path(target):
+                    return
                 subprocess.Popen(
                     ["explorer", _windows_explorer_select_arg(target)],
                     creationflags=0x08000000,

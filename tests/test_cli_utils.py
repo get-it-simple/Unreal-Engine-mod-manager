@@ -15,7 +15,10 @@ class CliUtilsTests(unittest.TestCase):
         path = base / "mm select target.pak"
         path.write_text("x", encoding="utf-8")
         try:
-            with patch("mod_manager.cli_utils.is_windows", return_value=True), patch("subprocess.Popen") as popen:
+            with patch("mod_manager.cli_utils.is_windows", return_value=True), patch(
+                "mod_manager.cli_utils._windows_shell_select_path",
+                return_value=False,
+            ), patch("subprocess.Popen") as popen:
                 select_in_explorer(path)
 
             args = popen.call_args.args[0]
@@ -37,7 +40,10 @@ class CliUtilsTests(unittest.TestCase):
         except (OSError, NotImplementedError):
             self.skipTest("symlinks are not available")
         try:
-            with patch("mod_manager.cli_utils.is_windows", return_value=True), patch("subprocess.Popen") as popen:
+            with patch("mod_manager.cli_utils.is_windows", return_value=True), patch(
+                "mod_manager.cli_utils._windows_shell_select_path",
+                return_value=False,
+            ), patch("subprocess.Popen") as popen:
                 select_in_explorer(link)
 
             args = popen.call_args.args[0]
@@ -46,6 +52,21 @@ class CliUtilsTests(unittest.TestCase):
         finally:
             if link.exists() or link.is_symlink():
                 link.unlink()
+
+    def test_select_in_explorer_uses_windows_shell_api_before_explorer_fallback(self):
+        path = Path(tempfile.gettempdir()) / "mm shell select target.pak"
+        path.write_text("x", encoding="utf-8")
+        try:
+            with patch("mod_manager.cli_utils.is_windows", return_value=True), patch(
+                "mod_manager.cli_utils._windows_shell_select_path",
+                return_value=True,
+            ) as shell_select, patch("subprocess.Popen") as popen:
+                select_in_explorer(path)
+
+            shell_select.assert_called_once_with(path.absolute())
+            popen.assert_not_called()
+        finally:
+            path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
