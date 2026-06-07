@@ -20,6 +20,7 @@ from .mods import (
     is_image_file,
     is_mod_file,
     list_broken_links,
+    list_installed_mods,
     mod_image_path,
     mods_view,
     mods_records,
@@ -181,7 +182,7 @@ class ModManagerGui(tk.Tk):
         self.search_var = tk.StringVar()
         self.label_filter_var = tk.StringVar()
         self.label_edit_var = tk.StringVar()
-        self.order_var = tk.StringVar(value="Default")
+        self.order_var = tk.StringVar(value=self.cfg.get("order_var", "Default"))
         self.status_var = tk.StringVar()
         self.placeholder_images: Dict[str, tk.PhotoImage] = {}
         self.current_mod_items = []
@@ -192,10 +193,11 @@ class ModManagerGui(tk.Tk):
         self.busy = False
         self.action_widgets = []
         self.mod_selection_widgets = []
-        self.mod_sort_key = "d"
-        self.mod_sort_reverse = False
-        self.preset_sort_key = "name"
-        self.preset_sort_reverse = False
+        self.mod_sort_key = self.cfg.get("mod_sort_key", "d")
+        self.mod_sort_reverse = bool(self.cfg.get("mod_sort_reverse", False))
+        self.preset_sort_key = self.cfg.get("preset_sort_key", "name")
+        self.preset_sort_reverse = bool(self.cfg.get("preset_sort_reverse", False))
+        self.order_var.trace_add("write", self._save_order_setting)
         self.ui_scale_values = ["25%", "50%", "75%", "100%", "125%", "150%", "175%", "200%"]
         self._scroll_frames: list = []
         self._apply_gui_style()
@@ -460,6 +462,7 @@ class ModManagerGui(tk.Tk):
         self.presets_tree.column("state", width=90, anchor="center")
         self.presets_tree.column("mods", width=90, anchor="center")
         self.presets_tree.column("last", width=170)
+        self.presets_tree.tag_configure("applied", background="#d4edda")
         self.presets_tree.pack(fill="both", expand=True, pady=8)
         self.presets_tree.bind("<Double-1>", lambda e: self._toggle_selected_presets())
         actions = WrapFrame(self.presets_tab)
@@ -569,6 +572,9 @@ class ModManagerGui(tk.Tk):
         else:
             self.mod_sort_key = key
             self.mod_sort_reverse = False
+        self.cfg["mod_sort_key"] = self.mod_sort_key
+        self.cfg["mod_sort_reverse"] = self.mod_sort_reverse
+        save_config(self.cfg)
         self.mod_page.set(1)
         self.refresh_mods()
 
@@ -578,8 +584,15 @@ class ModManagerGui(tk.Tk):
         else:
             self.preset_sort_key = key
             self.preset_sort_reverse = False
+        self.cfg["preset_sort_key"] = self.preset_sort_key
+        self.cfg["preset_sort_reverse"] = self.preset_sort_reverse
+        save_config(self.cfg)
         self.preset_page.set(1)
         self.refresh_presets()
+
+    def _save_order_setting(self, *_) -> None:
+        self.cfg["order_var"] = self.order_var.get()
+        save_config(self.cfg)
 
     def _save_placeholder_width(self, _event=None) -> None:
         width = int(self.mods_tree.column("#0", "width"))
@@ -920,6 +933,7 @@ class ModManagerGui(tk.Tk):
             return
         presets, keys, page_keys, page, pages = presets_view(self.cfg, max(1, int(self.preset_page.get() or 1)), self._preset_order_mode())
         records = presets_records()
+        installed_set = {m.name for m in list_installed_mods(self.cfg)}
         self.preset_page.set(page)
         self.presets_tree.delete(*self.presets_tree.get_children())
         for i, name in enumerate(page_keys, 1):
@@ -927,7 +941,9 @@ class ModManagerGui(tk.Tk):
             rec = records.get(name, {})
             state = rec.get("state") or "undefined"
             last_managed = rec.get("last_managed") or "-"
-            self.presets_tree.insert("", "end", iid=str(i), text=name, values=(state, len(mods), last_managed))
+            all_applied = bool(mods) and all(nm in installed_set for nm in mods)
+            tags = ("applied",) if all_applied else ()
+            self.presets_tree.insert("", "end", iid=str(i), text=name, values=(state, len(mods), last_managed), tags=tags)
         self.preset_name_box.set_completion_values(keys)
         self.status_var.set(f"Presets page {page}/{pages}. Items: {len(keys)}")
 

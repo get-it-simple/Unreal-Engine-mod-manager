@@ -34,4 +34,9 @@ DEFAULT_CONFIG = {
     "placeholder_image_col_width": 56,
     "window_width": 1200,
     "window_height": 750,
+    "order_var": "Default",
+    "mod_sort_key": "d",
+    "mod_sort_reverse": False,
+    "preset_sort_key": "name",
+    "preset_sort_reverse": False,
 }
