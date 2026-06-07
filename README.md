@@ -14,6 +14,9 @@ A symlink-based mod manager for Unreal Engine games. Manages mods as symbolic li
 - GUI (tkinter) and CLI interfaces
 - Drag, drop, paste, or pick mod files/folders in the GUI
 - Optional local artwork for mods
+- List and tile view modes in the GUI
+- Tile view preview images, installed markers, keyboard navigation, and zoom
+- Virtual rendering keeps off-screen mod rows and tiles from being drawn beyond a one-row buffer
 
 ---
 
@@ -48,10 +51,16 @@ python mod-manager.py gui
 Run the full test suite with:
 
 ```bash
-python -B -m unittest discover -s tests -p "test_*.py"
+python tests/run_tests.py --jobs auto
 ```
 
-The tests cover CLI request parsing and dispatch, the `python mod-manager.py` launcher modes, and core tkinter GUI flows with filesystem, dialogs, and link operations patched out. The `-B` flag prevents Python bytecode cache files from being written during the run.
+The parallel runner discovers every individual test case in `tests/test_*.py` and runs them across available workers. Use `--jobs 1` for a serial run. The tests cover CLI request parsing and dispatch, the `python mod-manager.py` launcher modes, and core tkinter GUI flows with filesystem, dialogs, and link operations patched out.
+
+The standard unittest command is still supported:
+
+```bash
+python -m unittest discover -s tests -p "test_*.py"
+```
 
 ---
 
@@ -61,8 +70,7 @@ The tests cover CLI request parsing and dispatch, the `python mod-manager.py` la
 <summary>Onedir app (recommended — faster startup)</summary>
 
 ```powershell
-$env:MOD_MANAGER_BUILD_EXE="1"
-python build-gui-exe.py
+python build-gui-exe.py --exe --onedir
 # Output: dist\mod-manager-gui\mod-manager-gui.exe
 ```
 
@@ -72,9 +80,7 @@ python build-gui-exe.py
 <summary>Onefile app (single executable, slower startup)</summary>
 
 ```powershell
-$env:MOD_MANAGER_BUILD_EXE="1"
-$env:MOD_MANAGER_ONEFILE="1"
-python build-gui-exe.py
+python build-gui-exe.py --exe --onefile
 # Output: dist\mod-manager-gui.exe
 ```
 
@@ -84,11 +90,19 @@ python build-gui-exe.py
 <summary>Portable Python archive (no PyInstaller)</summary>
 
 ```bash
-python build-gui-exe.py
+python build-gui-exe.py --pyz
 # Output: dist\mod-manager-gui.pyz
 ```
 
 </details>
+
+Environment variables are still supported for compatibility:
+
+```powershell
+$env:MOD_MANAGER_BUILD_EXE="1"
+$env:MOD_MANAGER_ONEFILE="1"
+python build-gui-exe.py
+```
 
 ---
 

@@ -32,6 +32,8 @@ DEFAULT_CONFIG = {
     "gui_font_family": "",
     "gui_font_size": 10,
     "placeholder_image_col_width": 56,
+    "mod_view_mode": "list",
+    "tile_size": 140,
     "window_width": 1200,
     "window_height": 750,
     "order_var": "Default",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import os
 import shutil
 import subprocess
@@ -43,11 +44,11 @@ def _build_pyz() -> int:
     print(f"Built {out_path}")
     return 0
 
-def _build_exe() -> int:
+def _build_exe(onefile: bool) -> int:
     pyinstaller = shutil.which("pyinstaller")
     if not pyinstaller:
         return _build_pyz()
-    mode = "--onefile" if os.environ.get("MOD_MANAGER_ONEFILE") == "1" else "--onedir"
+    mode = "--onefile" if onefile else "--onedir"
     cmd = [
         pyinstaller,
         "-y",
@@ -59,10 +60,27 @@ def _build_exe() -> int:
     ]
     return subprocess.call(cmd)
 
-def main() -> int:
-    _clean_before()
-    result = _build_exe() if os.environ.get("MOD_MANAGER_BUILD_EXE") == "1" else _build_pyz()
-    _clean_after()
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Build Mod Manager GUI artifacts.")
+    artifact = parser.add_mutually_exclusive_group()
+    artifact.add_argument("--exe", action="store_true", help="Build an executable with PyInstaller when available.")
+    artifact.add_argument("--pyz", action="store_true", help="Build the portable Python archive.")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--onefile", action="store_true", help="Build a single executable file.")
+    mode.add_argument("--onedir", action="store_true", help="Build an onedir executable.")
+    parser.add_argument("--no-clean-before", action="store_true", help="Do not remove old dist artifacts before building.")
+    parser.add_argument("--no-clean-after", action="store_true", help="Do not remove build/spec artifacts after building.")
+    return parser
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    build_exe = args.exe or (not args.pyz and os.environ.get("MOD_MANAGER_BUILD_EXE") == "1")
+    onefile = args.onefile or (not args.onedir and os.environ.get("MOD_MANAGER_ONEFILE") == "1")
+    if not args.no_clean_before:
+        _clean_before()
+    result = _build_exe(onefile) if build_exe else _build_pyz()
+    if not args.no_clean_after:
+        _clean_after()
     return result
 
 if __name__ == "__main__":
