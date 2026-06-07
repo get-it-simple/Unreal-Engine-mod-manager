@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import base64
 import ctypes
+import importlib
 from pathlib import Path
-
-import tkinter as tk
 
 _GDI_TOKEN = ctypes.c_size_t(0)
 _GDI_READY = False
@@ -66,7 +65,11 @@ def _init() -> bool:
     return _GDI_READY
 
 
-def _load_scaled_gdi(path: Path, max_w: int, max_h: int) -> tk.PhotoImage | None:
+def _photo_image(**kwargs):
+    return importlib.import_module("tkinter").PhotoImage(**kwargs)
+
+
+def _load_scaled_gdi(path: Path, max_w: int, max_h: int) -> object | None:
     if not _init():
         return None
     try:
@@ -116,7 +119,7 @@ def _load_scaled_gdi(path: Path, max_w: int, max_h: int) -> tk.PhotoImage | None
                     gdi.GdipBitmapUnlockBits(dst, ctypes.byref(bd))
 
                 ppm = f"P6\n{tw} {th}\n255\n".encode() + bytes(rgb)
-                return tk.PhotoImage(data=base64.b64encode(ppm).decode(), format="ppm")
+                return _photo_image(data=base64.b64encode(ppm).decode(), format="ppm")
             finally:
                 gdi.GdipDisposeImage(dst)
         finally:
@@ -125,7 +128,7 @@ def _load_scaled_gdi(path: Path, max_w: int, max_h: int) -> tk.PhotoImage | None
         return None
 
 
-def _load_scaled_pillow(path: Path, max_w: int, max_h: int) -> tk.PhotoImage | None:
+def _load_scaled_pillow(path: Path, max_w: int, max_h: int) -> object | None:
     try:
         import io
         from PIL import Image
@@ -139,7 +142,7 @@ def _load_scaled_pillow(path: Path, max_w: int, max_h: int) -> tk.PhotoImage | N
             im = im.convert("RGB").resize((tw, th), Image.LANCZOS)
             buf = io.BytesIO()
             im.save(buf, format="PNG")
-            return tk.PhotoImage(data=base64.b64encode(buf.getvalue()).decode())
+            return _photo_image(data=base64.b64encode(buf.getvalue()).decode())
     except Exception:
         return None
 
@@ -170,7 +173,7 @@ def _save_as_png_pillow(src: Path, dst: Path) -> bool:
         return False
 
 
-def load_scaled(path: Path, max_w: int, max_h: int) -> tk.PhotoImage | None:
+def load_scaled(path: Path, max_w: int, max_h: int) -> object | None:
     return _load_scaled_gdi(path, max_w, max_h) or _load_scaled_pillow(path, max_w, max_h)
 
 

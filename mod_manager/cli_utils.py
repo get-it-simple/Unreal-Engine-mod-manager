@@ -82,18 +82,22 @@ def print_pager(pages: int, current: int):
     for i in range(0, len(labels), 10):
         print(" ".join(labels[i:i+10]))
 
+def _windows_explorer_select_arg(target: Path) -> str:
+    return f'/select,"{target}"'
+
 def select_in_explorer(path: Path) -> None:
-    target = Path(path)
+    target = Path(path).expanduser()
     try:
         if is_windows():
-            if target.exists():
+            target = target.absolute()
+            if target.exists() or target.is_symlink():
                 subprocess.Popen(
-                    ["explorer", f"/select,{target}"],
+                    ["explorer", _windows_explorer_select_arg(target)],
                     creationflags=0x08000000,
                 )
             elif target.parent.exists():
                 subprocess.Popen(
-                    ["explorer", str(target.parent)],
+                    ["explorer", str(target.parent.absolute())],
                     creationflags=0x08000000,
                 )
         elif platform.system() == "Darwin":

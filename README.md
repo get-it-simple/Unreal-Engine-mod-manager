@@ -11,7 +11,7 @@ A symlink-based mod manager for Unreal Engine games. Manages mods as symbolic li
 - Labels — tag and filter mods by category
 - Pagination, search, and ordering
 - Broken link detection and cleanup
-- GUI (tkinter) and CLI interfaces
+- GUI (PySide6/Qt) and CLI interfaces
 - Drag, drop, paste, or pick mod files/folders in the GUI
 - Optional local artwork for mods
 - List and tile view modes in the GUI
@@ -54,7 +54,7 @@ Run the full test suite with:
 python tests/run_tests.py --jobs auto
 ```
 
-The parallel runner discovers every individual test case in `tests/test_*.py` and runs them across available workers. Use `--jobs 1` for a serial run. The tests cover CLI request parsing and dispatch, the `python mod-manager.py` launcher modes, and core tkinter GUI flows with filesystem, dialogs, and link operations patched out.
+The parallel runner discovers every individual test case in `tests/test_*.py` and runs them across available workers. Use `--jobs 1` for a serial run. The tests cover CLI request parsing and dispatch, the `python mod-manager.py` launcher modes, and core GUI flows with filesystem, dialogs, and link operations patched out.
 
 The standard unittest command is still supported:
 
@@ -73,6 +73,8 @@ python -m unittest discover -s tests -p "test_*.py"
 python build-gui-exe.py --exe --onedir
 # Output: dist\mod-manager-gui\mod-manager-gui.exe
 ```
+
+The build script checks for required GUI/build packages and, in an interactive shell, asks whether missing packages should be installed.
 
 </details>
 

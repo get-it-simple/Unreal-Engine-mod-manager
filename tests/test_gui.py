@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import tkinter as tk
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from mod_manager.models import ModItem
+
+try:
+    from PySide6 import QtCore, QtGui, QtWidgets
+except ModuleNotFoundError:
+    QtCore = None
+    QtGui = None
+    QtWidgets = None
 
 _FAKE_SRC = Path(tempfile.gettempdir()) / "mm_test_source"
 _FAKE_DEST = Path(tempfile.gettempdir()) / "mm_test_game"
@@ -15,13 +23,12 @@ _FAKE_DROP = Path(tempfile.gettempdir()) / "mm_test_drop"
 _FAKE_NEW_DEST = Path(tempfile.gettempdir()) / "mm_test_new_game"
 
 
-class DummyDropTarget:
-    def __init__(self, widget, callback):
-        self.widget = widget
-        self.callback = callback
-
-
+@unittest.skipIf(QtWidgets is None, "PySide6 is not installed")
 class GuiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.qt_app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
     def setUp(self) -> None:
         self.cfg = {
             "mods_source_dir": str(_FAKE_SRC),
@@ -55,7 +62,6 @@ class GuiTests(unittest.TestCase):
         self.patchers = [
             patch("mod_manager.gui.load_config", return_value=self.cfg),
             patch("mod_manager.gui.save_config"),
-            patch("mod_manager.gui.WindowsDropTarget", DummyDropTarget),
             patch("mod_manager.gui.ensure_paths", return_value=True),
             patch("mod_manager.gui.mod_image_path", return_value=None),
             patch("mod_manager.gui.mods_view", return_value=(self.mods, self.mods, 1, 1, {"combat.pak": "combat"})),
@@ -75,427 +81,498 @@ class GuiTests(unittest.TestCase):
             patcher.start()
         from mod_manager.gui import ModManagerGui
 
-        try:
-            self.app = ModManagerGui()
-        except tk.TclError as exc:
-            self._stop_patchers()
-            self.skipTest(f"tkinter display unavailable: {exc}")
-        self.app.withdraw()
-        self.app.update_idletasks()
+        self.window = ModManagerGui()
+        self.window.hide()
+        self.qt_app.processEvents()
 
     def tearDown(self) -> None:
-        if hasattr(self, "app"):
-            self.app.update()
-            self.app.destroy()
-        self._stop_patchers()
-
-    def _stop_patchers(self) -> None:
-        for patcher in reversed(getattr(self, "patchers", [])):
+        self.window.close()
+        self.window.deleteLater()
+        self.qt_app.processEvents()
+        for patcher in reversed(self.patchers):
             patcher.stop()
 
     def mod_item(self, name: str, installed: bool = False, is_dir: bool = False) -> ModItem:
-        return ModItem(
-            name=name,
-            src=_FAKE_SRC / name,
-            dest=_FAKE_DEST / name,
-            is_dir=is_dir,
-            installed=installed,
-        )
+        return ModItem(name=name, src=_FAKE_SRC / name, dest=_FAKE_DEST / name, is_dir=is_dir, installed=installed)
 
     def run_action_inline(self, label, worker, done=None, file_key="global") -> None:
         result = worker()
         if done:
             done(result)
 
+    def select_mod_rows(self, *rows: int) -> None:
+        view = self.window._current_mod_view()
+        selection_model = view.selectionModel()
+        selection_model.clearSelection()
+        for row in rows:
+            left = self.window.mods_model.index(row, 0)
+            right = self.window.mods_model.index(row, self.window.mods_model.columnCount() - 1)
+            selection = QtCore.QItemSelection(left, right)
+            selection_model.select(selection, QtCore.QItemSelectionModel.Select)
+        self.qt_app.processEvents()
+
     def widget_texts(self, widget):
         values = []
         try:
-            text = widget.cget("text")
+            text = widget.text()
             if text:
                 values.append(text)
-        except tk.TclError:
+        except AttributeError:
             pass
-        for child in widget.winfo_children():
-            values.extend(self.widget_texts(child))
+        for child in widget.findChildren(QtWidgets.QWidget):
+            try:
+                text = child.text()
+                if text:
+                    values.append(text)
+            except AttributeError:
+                pass
         return values
 
-    def find_button(self, widget, text_prefix: str):
-        try:
-            text = widget.cget("text")
-            if isinstance(widget, tk.Widget) and text.startswith(text_prefix) and hasattr(widget, "_command"):
-                return widget
-        except tk.TclError:
-            pass
-        for child in widget.winfo_children():
-            found = self.find_button(child, text_prefix)
-            if found:
-                return found
-        return None
+    def test_initial_refresh_populates_models(self):
+        self.assertIs(self.window.centralWidget(), self.window.mods_tab)
+        self.assertFalse(hasattr(self.window, "tabs"))
+        self.assertEqual(self.window.mods_model.rowCount(), 2)
+        self.assertEqual(self.window.mods_model.data(self.window.mods_model.index(0, 0)), "[installed] combat.pak")
+        self.assertEqual(self.window.mods_model.data(self.window.mods_model.index(0, 1)), "combat")
+        self.assertEqual(self.window.presets_model.rowCount(), 2)
+        self.assertEqual(self.window.presets_model.data(self.window.presets_model.index(0, 0)), "core")
+        self.assertEqual(self.window.presets_model.data(self.window.presets_model.index(0, 1)), "applied")
+        self.assertEqual(self.window.broken_model.rowCount(), 1)
+        self.assertEqual(self.window.broken_model.data(self.window.broken_model.index(0, 0)), "missing.pak")
 
-    def test_initial_refresh_populates_mods_presets_and_broken_tabs(self):
-        mod_rows = self.app.mods_tree.get_children()
-        preset_rows = self.app.presets_tree.get_children()
-        broken_rows = self.app.broken_tree.get_children()
+    def test_mod_table_stretches_only_name_column(self):
+        header = self.window.mods_table.horizontalHeader()
 
-        self.assertEqual(len(mod_rows), 2)
-        self.assertEqual(self.app.mods_tree.item("1", "values"), ("✓  combat.pak", "combat", "2026-01-01 10:00:00"))
-        self.assertEqual(self.app.mods_tree.item("2", "values"), ("ui.pak", "-", "-"))
-        self.assertEqual(self.app.search_box["values"], ("combat.pak", "ui.pak"))
-        self.assertEqual(self.app.label_filter_box["values"], ("combat",))
-        self.assertEqual(len(preset_rows), 2)
-        self.assertEqual(self.app.presets_tree.item("1", "text"), "core")
-        self.assertEqual(self.app.presets_tree.item("1", "values"), ("applied", "1", "2026-01-02 10:00:00"))
-        self.assertEqual(len(broken_rows), 1)
-        self.assertEqual(self.app.broken_tree.item("1", "text"), "missing.pak")
+        self.assertFalse(header.stretchLastSection())
+        self.assertEqual(header.sectionResizeMode(0), QtWidgets.QHeaderView.Stretch)
+        self.assertEqual(header.sectionResizeMode(1), QtWidgets.QHeaderView.ResizeToContents)
+        self.assertEqual(header.sectionResizeMode(2), QtWidgets.QHeaderView.ResizeToContents)
+
+    def test_manage_menu_opens_secondary_dialogs(self):
+        menu_titles = [action.text() for action in self.window.menuBar().actions()]
+        self.assertIn("Manage", menu_titles)
+        self.assertEqual(self.window.manage_button.text(), "Menu")
+        self.assertIsNotNone(self.window.manage_button.menu())
+        self.assertFalse(self.window.manage_button.icon().isNull())
+        self.assertEqual([action.text() for action in self.window.manage_button.menu().actions()], ["Presets", "Settings", "Broken links"])
+
+        self.window._open_presets_dialog()
+        self.assertTrue(self.window.presets_dialog.isVisible())
+        self.window.presets_dialog.close()
+
+        self.window._open_settings_dialog()
+        self.assertTrue(self.window.settings_dialog.isVisible())
+        self.window.settings_dialog.close()
+
+        self.window._open_broken_dialog()
+        self.assertTrue(self.window.broken_dialog.isVisible())
+        self.window.broken_dialog.close()
 
     def test_view_args_and_clear_search_update_filter_state(self):
-        self.app.mod_page.set(3)
-        self.app.search_var.set("ui")
-        self.app.label_filter_var.set("combat")
-        self.app.order_var.set("Created date")
+        self.window.mod_page.set(3)
+        self.window.search_var.set("ui")
+        self.window.label_filter_var.set("combat")
 
-        self.assertEqual(self.app._view_args(), (3, "combat", "ui", "cd"))
+        self.assertEqual(self.window._view_args(), (3, "combat", "ui", "d"))
 
-        with patch.object(self.app, "refresh_mods") as refresh_mods:
-            self.app._mods_clear()
+        with patch.object(self.window, "refresh_mods") as refresh_mods:
+            self.window._mods_clear()
 
-        self.assertEqual(self.app.mod_page.get(), 1)
-        self.assertEqual(self.app.search_var.get(), "")
-        self.assertEqual(self.app.label_filter_var.get(), "")
+        self.assertEqual(self.window.mod_page.get(), 1)
+        self.assertEqual(self.window.search_var.get(), "")
+        self.assertEqual(self.window.label_filter_var.get(), "")
         refresh_mods.assert_called_once_with()
 
-    def test_tile_detail_label_chip_matches_label_row_height(self):
-        self.app.mod_view_mode.set("tiles")
-        self.app._show_mod_view()
-        self.app.refresh_mods()
-        button = self.find_button(self.app.detail_frame, "combat")
-        self.assertIsNotNone(button)
-        self.app.update_idletasks()
-        peer_heights = []
-        for child in button.master.grid_slaves(row=2):
-            peer_heights.append(child.winfo_reqheight())
-        self.assertLessEqual(max(peer_heights) - min(peer_heights), 3)
+    def test_order_control_restores_default_and_created_date_modes(self):
+        with patch.object(self.window, "refresh_mods") as refresh_mods, patch("mod_manager.gui.save_config") as save_config:
+            self.window._set_mod_order("Created date")
 
-    def test_sorting_saves_state_and_refreshes_relevant_tree(self):
-        with patch("mod_manager.gui.save_config") as save_config, patch.object(self.app, "refresh_mods") as refresh_mods:
-            self.app._sort_mods("name")
+        self.assertEqual(self.window.order_var.get(), "Created date")
+        self.assertEqual(self.window._view_args()[3], "cd")
+        refresh_mods.assert_called_once_with()
+        save_config.assert_called_once_with(self.window.cfg)
 
-        self.assertEqual(self.app.mod_sort_key, "name")
-        self.assertFalse(self.app.mod_sort_reverse)
-        self.assertEqual(self.app.mod_page.get(), 1)
-        save_config.assert_called_once_with(self.app.cfg)
+        with patch.object(self.window, "refresh_mods"):
+            self.window._set_mod_order("Default")
+
+        self.assertEqual(self.window._view_args()[3], "d")
+
+    def test_tile_view_uses_same_model_and_label_button_toggles_filter(self):
+        with patch("mod_manager.gui.save_config") as save_config:
+            self.window._set_view_mode("tiles")
+
+        self.assertEqual(self.window.mods_stack.currentWidget(), self.window.tile_splitter)
+        self.assertEqual(self.window.tiles_view.model(), self.window.mods_model)
+        self.assertTrue(self.window.view_tiles_button.isChecked())
+        self.assertFalse(self.window.view_list_button.isChecked())
+        save_config.assert_called()
+
+        with patch.object(self.window, "refresh_mods") as refresh_mods:
+            self.window._toggle_label_filter("combat")
+
+        self.assertEqual(self.window.label_filter_var.get(), "combat")
+        self.assertEqual(self.window.mod_page.get(), 1)
         refresh_mods.assert_called_once_with()
 
-        with patch("mod_manager.gui.save_config") as save_config, patch.object(self.app, "refresh_presets") as refresh_presets:
-            self.app._sort_presets("name")
+        with patch.object(self.window, "refresh_mods") as refresh_mods:
+            self.window._toggle_label_filter("combat")
 
-        self.assertEqual(self.app.preset_sort_key, "name")
-        self.assertTrue(self.app.preset_sort_reverse)
-        save_config.assert_called_once_with(self.app.cfg)
-        refresh_presets.assert_called_once_with()
+        self.assertEqual(self.window.label_filter_var.get(), "")
+        refresh_mods.assert_called_once_with()
+
+    def test_double_click_toggles_mods_in_list_and_tile_views(self):
+        with patch.object(self.window, "_toggle_selected_mods") as toggle:
+            self.window.mods_table.doubleClicked.emit(self.window.mods_model.index(0, 0))
+        toggle.assert_called_once_with()
+
+        with patch.object(self.window, "_toggle_selected_mods") as toggle:
+            self.window._set_view_mode("tiles")
+            self.window.tiles_view.doubleClicked.emit(self.window.mods_model.index(0, 0))
+        toggle.assert_called_once_with()
+
+    def test_detail_panel_clears_nested_rows_and_keeps_image_above_text(self):
+        self.window._set_view_mode("tiles")
+        self.window._refresh_mod_detail(self.mods[0])
+        self.window._refresh_mod_detail(self.mods[1])
+
+        texts = self.widget_texts(self.window.detail_frame)
+        self.assertEqual(texts.count("Name"), 1)
+        self.assertIn("ui.pak", texts)
+        self.assertNotIn("combat.pak", texts)
+        self.assertEqual(self.window.detail_layout.alignment(), QtCore.Qt.AlignTop)
+
+    def test_single_mod_detail_shows_state_action_button(self):
+        self.window._refresh_mod_detail(self.mods[0])
+        texts = self.widget_texts(self.window.detail_frame)
+        self.assertIn("Action", texts)
+        self.assertIn("Uninstall", texts)
+        self.assertNotIn("State", texts)
+
+        with patch.object(self.window, "_toggle_selected_indexes") as toggle:
+            buttons = [widget for widget in self.window.detail_frame.findChildren(QtWidgets.QPushButton) if widget.text() == "Uninstall"]
+            self.assertEqual(len(buttons), 1)
+            buttons[0].click()
+
+        toggle.assert_called_once_with([1])
+
+    def test_single_mod_detail_shows_created_date_with_last_managed(self):
+        self.window.current_mod_records["combat.pak"]["created_date"] = "2026-01-01 09:00:00"
+        self.assertTrue(self.window._dates_fit_on_one_row("2026-01-01 10:00:00", "2026-01-01 09:00:00", 900))
+        self.assertFalse(self.window._dates_fit_on_one_row("2026-01-01 10:00:00", "2026-01-01 09:00:00", 180))
+
+        self.window._refresh_mod_detail(self.mods[0])
+        texts = self.widget_texts(self.window.detail_frame)
+        self.assertIn("Last managed", texts)
+        self.assertIn("2026-01-01 10:00:00", texts)
+        self.assertIn("Created", texts)
+        self.assertIn("2026-01-01 09:00:00", texts)
+
+    def test_multi_select_detail_shows_installed_counts_and_options(self):
+        self.window._set_view_mode("tiles")
+        self.select_mod_rows(0, 1)
+        self.window._refresh_selected_detail()
+
+        texts = self.widget_texts(self.window.detail_frame)
+        self.assertIn("2 mods selected", texts)
+        self.assertIn("Installed", texts)
+        self.assertIn("Not installed", texts)
+        self.assertIn("1", texts)
+        self.assertIn("Install 1", texts)
+        self.assertIn("Uninstall 1", texts)
+        self.assertIn("Toggle selected", texts)
+
+    def test_label_filter_refresh_updates_detail_once_without_intermediate_multi_panel(self):
+        self.window._set_view_mode("tiles")
+        with patch.object(self.window, "_refresh_multi_detail") as multi_detail, patch.object(
+            self.window, "_refresh_mod_detail", wraps=self.window._refresh_mod_detail
+        ) as mod_detail:
+            self.window._toggle_label_filter("combat")
+
+        multi_detail.assert_not_called()
+        self.assertEqual(mod_detail.call_count, 1)
+
+    def test_tile_zoom_updates_size_and_saves_config(self):
+        self.window._set_view_mode("tiles")
+        self.window.cfg["tile_size"] = 140
+
+        with patch("mod_manager.gui.save_config") as save_config:
+            result = self.window._zoom_tiles(1)
+
+        self.assertEqual(result, "break")
+        self.assertEqual(self.window.cfg["tile_size"], 152)
+        save_config.assert_called_once_with(self.window.cfg)
 
     def test_install_uninstall_and_toggle_selected_mods_dispatch_gui_options(self):
-        self.app._run_action = self.run_action_inline
-        self.app.mod_page.set(2)
-        self.app.search_var.set("pak")
-        self.app.label_filter_var.set("combat")
+        self.window._run_action = self.run_action_inline
+        self.window.mod_page.set(2)
+        self.window.search_var.set("pak")
+        self.window.label_filter_var.set("combat")
 
         with patch("mod_manager.gui.apply_mods_page", return_value=(2, 3, 1)) as apply_mods, patch.object(
-            self.app, "refresh_mods"
-        ) as refresh_mods, patch.object(self.app, "refresh_presets") as refresh_presets:
-            self.app._install_page()
+            self.window, "refresh_mods"
+        ) as refresh_mods, patch.object(self.window, "refresh_presets") as refresh_presets:
+            self.window._install_page()
 
-        apply_mods.assert_called_once_with(self.app.cfg, 2, "combat", "pak", "d")
-        self.assertEqual(self.app.status_var.get(), "Installed 2/3 on page 2. Errors: 1.")
+        apply_mods.assert_called_once_with(self.window.cfg, 2, "combat", "pak", "d")
+        self.assertEqual(self.window.status_var.get(), "Installed 2/3 on page 2. Errors: 1.")
         refresh_mods.assert_called_once_with()
         refresh_presets.assert_called_once_with()
 
-        with patch("mod_manager.gui.deactivate_mods_page", return_value=(2, 2)) as deactivate_mods, patch.object(
-            self.app, "refresh_mods"
-        ), patch.object(self.app, "refresh_presets"):
-            self.app._uninstall_page()
-
-        deactivate_mods.assert_called_once_with(self.app.cfg, 2, "combat", "pak", "d")
-        self.assertEqual(self.app.status_var.get(), "Uninstalled 2 on page 2.")
-
-        self.app.refresh_mods()
-        self.app.mods_tree.selection_set(("1", "2"))
+        self.select_mod_rows(0, 1)
         with patch("mod_manager.gui.toggle_mods_by_indexes", return_value="Toggled") as toggle_mods, patch.object(
-            self.app, "refresh_mods"
-        ) as refresh_mods, patch.object(self.app, "refresh_presets"):
-            self.app._toggle_selected_mods()
+            self.window, "refresh_mods"
+        ) as refresh_mods, patch.object(self.window, "refresh_presets"):
+            self.window._toggle_selected_mods()
 
         toggle_mods.assert_called_once_with(self.mods, [1, 2])
         refresh_mods.assert_called_once_with(["combat.pak", "ui.pak"])
-        self.assertEqual(self.app.status_var.get(), "Toggled")
+        self.assertEqual(self.window.status_var.get(), "Toggled")
 
-    def test_list_view_virtualizes_rows_to_visible_window_with_overscan(self):
-        many_mods = [self.mod_item(f"mod-{i:02d}.pak", installed=(i == 0)) for i in range(20)]
-        with patch("mod_manager.gui.mods_view", return_value=(many_mods, many_mods, 1, 1, {})), patch(
-            "mod_manager.gui.mods_records",
-            return_value={},
-        ):
-            self.app.mods_tree.configure(height=3)
-            self.app.refresh_mods()
+    def test_mod_selection_buttons_are_enabled_only_with_selection(self):
+        self.window.mods_table.selectionModel().clearSelection()
+        self.window._update_mod_selection_actions()
+        self.assertTrue(self.window.mod_selection_widgets)
+        self.assertTrue(all(not button.isEnabled() for button in self.window.mod_selection_widgets))
 
-        rendered = self.app.mods_tree.get_children()
-        self.assertLess(len(rendered), len(many_mods))
-        self.assertEqual(self.app.list_rendered_range[0], 0)
-        self.assertLessEqual(len(rendered), self.app._list_visible_rows() + 1)
+        self.select_mod_rows(0)
+        self.assertTrue(all(button.isEnabled() for button in self.window.mod_selection_widgets))
 
-        self.app._on_list_scroll("scroll", 3, "units")
+    def test_source_and_destination_rows_select_paths_in_explorer(self):
+        self.window._refresh_mod_detail(self.mods[0])
+        buttons = [widget for widget in self.window.detail_frame.findChildren(QtWidgets.QPushButton) if widget.text() in {str(self.mods[0].src), str(self.mods[0].dest)}]
+        self.assertEqual(len(buttons), 2)
 
-        self.assertGreater(self.app.list_rendered_range[0], 0)
-        self.assertTrue(all(int(iid) >= self.app.list_rendered_range[0] + 1 for iid in self.app.mods_tree.get_children()))
+        with patch("mod_manager.gui.select_in_explorer") as select_in_explorer:
+            buttons[0].click()
+            buttons[1].click()
 
-    def test_tile_view_mode_renders_tiles_with_installed_state_and_detail_panel(self):
-        with patch("mod_manager.gui.save_config") as save_config:
-            self.app.mod_view_mode.set("tiles")
-            self.app._on_mod_view_mode_changed()
+        select_in_explorer.assert_any_call(self.mods[0].src)
+        select_in_explorer.assert_any_call(self.mods[0].dest)
 
-        self.assertEqual(self.app.cfg["mod_view_mode"], "tiles")
-        save_config.assert_any_call(self.app.cfg)
-        self.assertEqual(self.app.tile_pane.winfo_manager(), "pack")
-        self.assertEqual(self.app.mods_list_frame.winfo_manager(), "")
-        self.assertEqual(len(self.app.tile_windows), 2)
-        self.app.update_idletasks()
-        frame0 = self.app.tile_windows[0][0]
-        frame1 = self.app.tile_windows[1][0]
-        self.assertIn("combat.pak", " ".join(self.widget_texts(frame0)))
-        self.assertIn("ui.pak", " ".join(self.widget_texts(frame1)))
-        self.assertEqual(self.app.tile_selected_index, 0)
-        detail_text = " ".join(self.widget_texts(self.app.detail_frame))
-        self.assertIn("combat.pak", detail_text)
-        self.assertIn("Uninstall", detail_text)
-        self.assertIn("2026-01-01 10:00:00", detail_text)
+    def test_tile_splitter_sizes_are_saved_and_restored(self):
+        self.window.tile_splitter.setSizes([420, 240])
+        self.window._save_tile_splitter_sizes()
 
-    def test_tile_detail_label_button_toggles_label_filter(self):
-        self.app.mod_view_mode.set("tiles")
-        self.app._show_mod_view()
-        self.app.refresh_mods()
-        button = self.find_button(self.app.detail_frame, "combat")
-        self.assertIsNotNone(button)
+        saved = self.window.tile_splitter.sizes()
+        self.assertEqual(self.window.cfg["_tile_list_width"], saved[0])
+        self.assertEqual(self.window.cfg["_tile_detail_width"], saved[1])
 
-        with patch.object(self.app, "refresh_mods") as refresh_mods:
-            button._command()
+        self.window.tile_splitter.setSizes([120, 520])
+        self.window._restore_tile_splitter_sizes()
+        self.assertEqual(self.window.tile_splitter.sizes(), saved)
 
-        self.assertEqual(self.app.label_filter_var.get(), "combat")
-        self.assertEqual(self.app.mod_page.get(), 1)
-        refresh_mods.assert_called_once_with()
+    def test_detail_image_is_after_text_and_uses_full_panel_width(self):
+        image_path = _FAKE_DROP / "preview.png"
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        pixmap = QtGui.QPixmap(800, 1600)
+        pixmap.fill(QtGui.QColor("red"))
+        pixmap.save(str(image_path), "PNG")
+        self.window.detail_scroll.resize(300, 500)
+        self.qt_app.processEvents()
 
-        self.app._refresh_mod_detail(self.mods[0])
-        button = self.find_button(self.app.detail_frame, "combat")
-        with patch.object(self.app, "refresh_mods") as refresh_mods:
-            button._command()
+        with patch("mod_manager.gui.mod_image_path", return_value=image_path):
+            self.window._refresh_mod_detail(self.mods[0])
 
-        self.assertEqual(self.app.label_filter_var.get(), "")
-        refresh_mods.assert_called_once_with()
+        image_labels = [
+            widget
+            for widget in self.window.detail_frame.findChildren(QtWidgets.QLabel)
+            if widget.pixmap() is not None and not widget.pixmap().isNull()
+        ]
+        self.assertEqual(len(image_labels), 1)
+        image = image_labels[0]
+        self.assertEqual(image.alignment(), QtCore.Qt.AlignHCenter | QtCore.Qt.AlignTop)
+        self.assertEqual(image.sizePolicy().horizontalPolicy(), QtWidgets.QSizePolicy.Expanding)
+        target_size = self.window._detail_image_target_size(image)
+        self.assertLessEqual(image.pixmap().width(), target_size.width())
+        self.assertLessEqual(image.pixmap().height(), target_size.height())
+        self.assertEqual(image.minimumWidth(), 0)
+        image.update_scaled_pixmap(QtCore.QSize(240, 120))
+        self.assertLessEqual(image.pixmap().width(), 240)
+        self.assertLessEqual(image.pixmap().height(), 120)
+        image_index = self.window.detail_layout.indexOf(image)
+        self.assertGreater(image_index, 3)
 
-    def test_tile_view_arrow_navigation_changes_selected_mod(self):
-        self.app.mod_view_mode.set("tiles")
-        self.app._show_mod_view()
-        self.app.refresh_mods()
-        self.app.tile_columns = 2
+    def test_action_buttons_and_settings_fields_do_not_expand_to_full_width(self):
+        self.assertEqual(self.window.label_edit.sizePolicy().horizontalPolicy(), QtWidgets.QSizePolicy.Fixed)
+        self.assertLessEqual(self.window.label_edit.maximumWidth(), 200)
+        self.assertEqual(self.window.mod_selection_widgets[0].sizePolicy().horizontalPolicy(), QtWidgets.QSizePolicy.Fixed)
 
-        result = self.app._on_arrow_key(type("Event", (), {"keysym": "Right"})())
+    def test_dialog_fields_expand_to_available_width(self):
+        for key in ("page_size", "mods_source_dir", "game_mods_dir"):
+            self.assertEqual(self.window.setting_widgets[key].sizePolicy().horizontalPolicy(), QtWidgets.QSizePolicy.Expanding)
+        self.assertEqual(self.window.setting_widgets["mods_source_dir"].maximumWidth(), 16777215)
+        self.assertTrue(self.window.presets_table.horizontalHeader().stretchLastSection())
+        self.assertTrue(self.window.broken_table.horizontalHeader().stretchLastSection())
 
-        self.assertEqual(result, "break")
-        self.assertEqual(self.app.tile_selected_index, 1)
-        self.assertEqual(self.app._selected_indexes(self.app.mods_tree), [2])
-        self.assertIn("ui.pak", " ".join(self.widget_texts(self.app.detail_frame)))
+    def test_settings_font_family_uses_system_font_select(self):
+        font_widget = self.window.setting_widgets["gui_font_family"]
 
-    def test_tile_view_virtualizes_tiles_to_visible_rows_with_overscan(self):
-        many_mods = [self.mod_item(f"mod-{i:02d}.pak", installed=(i == 0)) for i in range(30)]
-        self.app.mod_view_mode.set("tiles")
-        self.app._show_mod_view()
-        self.app.tile_canvas_width = 320
-        self.app.tile_canvas.configure(height=190)
-        with patch("mod_manager.gui.mods_view", return_value=(many_mods, many_mods, 1, 1, {})), patch(
-            "mod_manager.gui.mods_records",
-            return_value={},
-        ):
-            self.app.refresh_mods()
+        self.assertIsInstance(font_widget, QtWidgets.QComboBox)
+        self.assertFalse(font_widget.isEditable())
+        self.assertGreater(font_widget.count(), 0)
+        self.assertEqual(font_widget.itemText(0), "")
 
-        self.assertLess(len(self.app.tile_windows), len(many_mods))
-        start, end = self.app.tile_rendered_range
-        self.assertEqual(start, 0)
-        self.assertLess(end, len(many_mods))
+    def test_icon_buttons_have_palette_aware_icons_and_tooltips(self):
+        icon_buttons = [
+            widget
+            for widget in self.window.action_widgets
+            if isinstance(widget, QtWidgets.QPushButton) and not widget.text()
+        ]
 
-        self.app._on_tile_scroll("moveto", 0.5)
-        self.app._refresh_mod_tiles()
+        self.assertGreaterEqual(len(icon_buttons), 10)
+        for button in icon_buttons:
+            self.assertFalse(button.icon().isNull())
+            self.assertTrue(button.toolTip())
+            self.assertTrue(button.accessibleName())
+            self.assertEqual(button.iconSize(), QtCore.QSize(18, 18))
 
-        self.assertGreater(self.app.tile_rendered_range[0], 0)
-
-    def test_list_view_arrow_navigation_scrolls_virtual_list(self):
-        many_mods = [self.mod_item(f"mod-{i:02d}.pak") for i in range(20)]
-        with patch("mod_manager.gui.mods_view", return_value=(many_mods, many_mods, 1, 1, {})), patch(
-            "mod_manager.gui.mods_records", return_value={}
-        ):
-            self.app.mods_tree.configure(height=3)
-            self.app.refresh_mods()
-
-        self.assertEqual(self.app.list_selected_index, 0)
-
-        result = self.app._on_arrow_key(type("Event", (), {"keysym": "Down"})())
-        self.assertEqual(result, "break")
-        self.assertEqual(self.app.list_selected_index, 1)
-
-        # Move selection to last visible item, then arrow down to trigger virtual scroll
-        visible = self.app._list_visible_rows()
-        self.app.list_selected_index = visible - 1
-        self.app._refresh_mod_list()
-        offset_before = self.app.list_render_offset
-
-        result = self.app._on_arrow_key(type("Event", (), {"keysym": "Down"})())
-        self.assertEqual(result, "break")
-        self.assertGreater(self.app.list_render_offset, offset_before)
-        self.assertEqual(self.app.list_selected_index, visible)
-
-        # Arrow Up returns to previous index
-        result = self.app._on_arrow_key(type("Event", (), {"keysym": "Up"})())
-        self.assertEqual(result, "break")
-        self.assertEqual(self.app.list_selected_index, visible - 1)
-
-    def test_tile_view_zoom_uses_mousewheel_and_ctrl_shortcut_path(self):
-        self.app.mod_view_mode.set("tiles")
-        self.app._show_mod_view()
-        self.app.refresh_mods()
-        self.app.cfg["tile_size"] = 140
-
-        with patch("mod_manager.gui.save_config") as save_config:
-            result = self.app._zoom_tiles(1)
-
-        self.assertEqual(result, "break")
-        self.assertEqual(self.app.cfg["tile_size"], 152)
-        save_config.assert_called_once_with(self.app.cfg)
-
-        with patch.object(self.app, "_zoom_tiles", return_value="break") as zoom:
-            result = self.app._on_mousewheel(type("Event", (), {"delta": -120, "state": 0x4})())
-
-        self.assertEqual(result, "break")
-        zoom.assert_called_once_with(-1)
-
-        with patch.object(self.app, "_zoom_tiles") as zoom, patch.object(self.app, "_on_tile_scroll") as scroll:
-            result = self.app._on_mousewheel(type("Event", (), {"delta": -120, "state": 0})())
-
-        zoom.assert_not_called()
-        scroll.assert_called_once_with("scroll", 1, "units")
-        self.assertEqual(result, "break")
-
-    def test_back_forward_navigation_handlers_change_mod_pages(self):
-        with patch.object(self.app, "_change_mod_page") as change_page:
-            back_result = self.app._nav_back()
-            forward_result = self.app._nav_forward()
-
-        self.assertEqual(back_result, "break")
-        self.assertEqual(forward_result, "break")
-        change_page.assert_any_call(-1)
-        change_page.assert_any_call(1)
-
-    def test_label_buttons_validate_input_and_dispatch_selected_mods(self):
-        self.app._run_action = self.run_action_inline
-        self.app.refresh_mods()
-        self.app.mods_tree.selection_set(("1",))
-
-        with patch("mod_manager.gui.messagebox.showerror") as showerror:
-            self.app.label_edit_var.set("")
-            self.app._add_label_selected()
-
-        showerror.assert_called_once_with("Label", "Enter label.")
-
-        self.app.label_edit_var.set("combat")
-        with patch("mod_manager.gui.add_label_to_mods", return_value="Label added") as add_label, patch.object(
-            self.app, "refresh_mods"
-        ):
-            self.app._add_label_selected()
-
-        add_label.assert_called_once_with("combat", ["combat.pak"])
-        self.assertEqual(self.app.status_var.get(), "Label added")
-
-        with patch("mod_manager.gui.remove_label_from_mods", return_value="Label removed") as remove_label, patch.object(
-            self.app, "refresh_mods"
-        ):
-            self.app._remove_label_selected()
-
-        remove_label.assert_called_once_with("combat", ["combat.pak"])
-        self.assertEqual(self.app.status_var.get(), "Label removed")
-
-    def test_import_paths_filters_supported_mods_and_reports_counts(self):
-        self.app._run_action = self.run_action_inline
-        self.app.current_mod_items = [self.mods[0]]
-
-        with patch("mod_manager.gui.is_mod_file", side_effect=lambda path, _cfg: path.suffix == ".pak"), patch(
-            "mod_manager.gui.messagebox.askyesno",
-            return_value=True,
-        ) as askyesno, patch(
-            "mod_manager.mods.import_mod_file",
-            side_effect=[(True, "combat.pak"), (False, "new.pak")],
-        ) as import_mod, patch.object(self.app, "refresh_mods") as refresh_mods:
-            self.app._import_paths([_FAKE_DROP / "combat.pak", _FAKE_DROP / "skip.txt", _FAKE_DROP / "new.pak"])
-
-        askyesno.assert_called_once()
-        self.assertEqual(import_mod.call_count, 2)
-        import_mod.assert_any_call(self.app.cfg, _FAKE_DROP / "combat.pak", True)
-        import_mod.assert_any_call(self.app.cfg, _FAKE_DROP / "new.pak", False)
-        self.assertEqual(self.app.status_var.get(), "Imported: 1. Skipped: 1.")
-        refresh_mods.assert_called_once_with()
+        self.window._refresh_mod_detail(self.mods[0])
+        uninstall = [widget for widget in self.window.detail_frame.findChildren(QtWidgets.QPushButton) if widget.text() == "Uninstall"][0]
+        self.assertFalse(uninstall.icon().isNull())
+        self.assertTrue(uninstall.toolTip())
+        import_button = [button for button in icon_buttons if button.accessibleName() == "Import files"][0]
+        self.assertFalse(import_button.icon().isNull())
+        self.assertEqual(import_button.toolTip(), "Import mod files")
 
     def test_save_settings_converts_numeric_values_and_refreshes_ui(self):
-        self.app._run_action = self.run_action_inline
-        self.app.setting_vars["page_size"].set("25")
-        self.app.setting_vars["ui_scale_percent"].set("150%")
-        self.app.setting_vars["game_mods_dir"].set(str(_FAKE_NEW_DEST))
-        self.app.setting_vars["mod_extensions"].set(".pak")
-        self.app.setting_vars["mod_view_mode"].set("tiles")
-        self.app.setting_vars["tile_size"].set("188")
+        self.window._run_action = self.run_action_inline
+        self.window._open_settings_dialog()
+        self.window.setting_widgets["page_size"].setText("25")
+        self.window.setting_widgets["ui_scale_percent"].setText("150")
+        self.window.setting_widgets["game_mods_dir"].setText(str(_FAKE_NEW_DEST))
+        self.window.setting_widgets["mod_extensions"].setText(".pak")
+        self.window.setting_widgets["mod_view_mode"].setCurrentText("tiles")
+        self.window.setting_widgets["tile_size"].setText("188")
+        font_widget = self.window.setting_widgets["gui_font_family"]
+        if font_widget.count() > 1:
+            font_widget.setCurrentIndex(1)
+        selected_font = font_widget.currentText()
 
-        with patch("mod_manager.storage.save_config") as save_config, patch.object(self.app, "_rebuild_tabs") as rebuild, patch.object(
-            self.app, "refresh_all"
-        ) as refresh_all:
-            self.app._save_settings()
+        with patch("mod_manager.storage.save_config") as save_config, patch.object(self.window, "refresh_all") as refresh_all:
+            self.window._save_settings()
 
-        self.assertEqual(self.app.cfg["page_size"], 25)
-        self.assertEqual(self.app.cfg["ui_scale_percent"], 150)
-        self.assertEqual(self.app.cfg["game_mods_dir"], str(_FAKE_NEW_DEST))
-        self.assertEqual(self.app.cfg["mod_extensions"], ".pak")
-        self.assertEqual(self.app.cfg["mod_view_mode"], "tiles")
-        self.assertEqual(self.app.cfg["tile_size"], 188)
-        self.assertEqual(self.app.mod_view_mode.get(), "tiles")
+        self.assertEqual(self.window.cfg["page_size"], 25)
+        self.assertEqual(self.window.cfg["game_mods_dir"], str(_FAKE_NEW_DEST))
+        self.assertEqual(self.window.cfg["mod_extensions"], ".pak")
+        self.assertEqual(self.window.cfg["mod_view_mode"], "tiles")
+        self.assertEqual(self.window.cfg["tile_size"], 188)
+        self.assertEqual(self.window.cfg["gui_font_family"], selected_font)
         save_config.assert_called_once()
-        rebuild.assert_called_once_with()
         refresh_all.assert_called_once_with()
-        self.assertEqual(self.app.status_var.get(), "Settings saved.")
+        self.assertEqual(self.window.status_var.get(), "Settings saved.")
+        self.assertFalse(self.window.settings_dialog.isVisible())
 
     def test_preset_and_broken_actions_dispatch_selected_rows(self):
-        self.app._run_action = self.run_action_inline
-        self.app.refresh_presets()
-        self.app.presets_tree.selection_set(("1", "2"))
+        self.window._run_action = self.run_action_inline
+        self.window._open_presets_dialog()
+        preset_selection = self.window.presets_table.selectionModel()
+        preset_selection.select(self.window.presets_model.index(0, 0), QtCore.QItemSelectionModel.Select | QtCore.QItemSelectionModel.Rows)
+        preset_selection.select(self.window.presets_model.index(1, 0), QtCore.QItemSelectionModel.Select | QtCore.QItemSelectionModel.Rows)
 
         with patch("mod_manager.gui.toggle_presets_by_indexes", return_value=("Preset toggled", [], False)) as toggle, patch.object(
-            self.app, "refresh_mods"
-        ), patch.object(self.app, "refresh_presets"):
-            self.app._toggle_selected_presets()
+            self.window, "refresh_mods"
+        ), patch.object(self.window, "refresh_presets"):
+            self.window._toggle_selected_presets()
 
-        toggle.assert_called_once_with(self.app.cfg, 1, [1, 2], {"combat.pak"})
-        self.assertEqual(self.app.status_var.get(), "Preset toggled")
+        toggle.assert_called_once_with(self.window.cfg, 1, [1, 2], {"combat.pak"})
+        self.assertEqual(self.window.status_var.get(), "Preset toggled")
+        self.assertFalse(self.window.presets_dialog.isVisible())
 
-        with patch("mod_manager.gui.delete_presets_by_indexes", return_value=(2, [])) as delete_presets, patch.object(
-            self.app, "refresh_presets"
-        ):
-            self.app._delete_selected_presets()
-
-        delete_presets.assert_called_once_with(self.app.cfg, 1, [1, 2])
-        self.assertEqual(self.app.status_var.get(), "Deleted: 2. Missing: none")
-
-        self.app.refresh_broken()
-        self.app.broken_tree.selection_set(("1",))
-        with patch("mod_manager.mods.deactivate_mod", return_value=(True, "OK")) as deactivate, patch.object(
-            self.app, "refresh_broken"
-        ):
-            self.app._remove_selected_broken()
+        self.window._open_broken_dialog()
+        broken_selection = self.window.broken_table.selectionModel()
+        broken_selection.select(self.window.broken_model.index(0, 0), QtCore.QItemSelectionModel.Select | QtCore.QItemSelectionModel.Rows)
+        with patch("mod_manager.gui.deactivate_mod", return_value=(True, "OK")) as deactivate, patch.object(self.window, "refresh_broken"):
+            self.window._remove_selected_broken()
 
         deactivate.assert_called_once_with(self.broken[0])
-        self.assertEqual(self.app.status_var.get(), "Removed broken links: 1")
+        self.assertEqual(self.window.status_var.get(), "Removed broken links: 1")
+        self.assertFalse(self.window.broken_dialog.isVisible())
+
+    def test_preset_double_click_toggles_clicked_preset(self):
+        self.window._run_action = self.run_action_inline
+        self.window._open_presets_dialog()
+        with patch("mod_manager.gui.toggle_presets_by_indexes", return_value=("Preset toggled", [], False)) as toggle, patch.object(
+            self.window, "refresh_mods"
+        ), patch.object(self.window, "refresh_presets"):
+            self.window.presets_table.doubleClicked.emit(self.window.presets_model.index(1, 0))
+
+        toggle.assert_called_once_with(self.window.cfg, 1, [2], {"combat.pak"})
+        self.assertEqual(self.window.status_var.get(), "Preset toggled")
+        self.assertFalse(self.window.presets_dialog.isVisible())
+
+    def test_preset_save_and_delete_keep_dialog_open(self):
+        self.window._run_action = self.run_action_inline
+        self.window._open_presets_dialog()
+        self.window.preset_name.setText("new")
+
+        with patch("mod_manager.gui.save_preset_from_installed", return_value=(True, "Saved")):
+            self.window._save_preset()
+
+        self.assertTrue(self.window.presets_dialog.isVisible())
+
+        selection = self.window.presets_table.selectionModel()
+        selection.select(self.window.presets_model.index(0, 0), QtCore.QItemSelectionModel.Select | QtCore.QItemSelectionModel.Rows)
+        with patch("mod_manager.gui.delete_presets_by_indexes", return_value=(1, [])):
+            self.window._delete_selected_presets()
+
+        self.assertTrue(self.window.presets_dialog.isVisible())
+        self.window.presets_dialog.close()
+
+    def test_refresh_presets_suspends_table_updates_and_preserves_selection(self):
+        selection = self.window.presets_table.selectionModel()
+        selection.select(self.window.presets_model.index(0, 0), QtCore.QItemSelectionModel.Select | QtCore.QItemSelectionModel.Rows)
+
+        with patch.object(self.window.presets_table, "setUpdatesEnabled", wraps=self.window.presets_table.setUpdatesEnabled) as updates:
+            self.window.refresh_presets()
+
+        self.assertEqual([call.args[0] for call in updates.call_args_list], [False, True])
+        self.assertEqual(self.window._selected_rows(self.window.presets_table), [0])
+
+    def test_import_paths_filters_supported_mods_and_reports_counts(self):
+        self.window._run_action = self.run_action_inline
+        self.window.current_mod_items = [self.mods[0]]
+
+        with patch("mod_manager.gui.is_mod_file", side_effect=lambda path, _cfg: path.suffix == ".pak"), patch(
+            "mod_manager.gui.QtWidgets.QMessageBox.question",
+            return_value=QtWidgets.QMessageBox.Yes,
+        ) as question, patch("mod_manager.gui._run_import_batch", return_value=(["combat.pak"], ["new.pak"])) as import_batch, patch.object(
+            self.window, "refresh_mods"
+        ) as refresh_mods:
+            self.window._import_paths([_FAKE_DROP / "combat.pak", _FAKE_DROP / "skip.txt", _FAKE_DROP / "new.pak"])
+
+        question.assert_called_once()
+        import_batch.assert_called_once()
+        self.assertEqual(self.window.status_var.get(), "Imported: 1. Skipped: 1.")
+        refresh_mods.assert_called_once_with()
+
+    def test_drop_image_on_target_mod_imports_without_picker_and_refreshes_tile(self):
+        self.window._run_action = self.run_action_inline
+        self.window.current_mod_items = list(self.mods)
+        self.window.current_mods_shown = list(self.mods)
+        self.window.tile_delegate._pixmaps[("combat.pak", 140)] = QtGui.QPixmap(1, 1)
+        image_path = _FAKE_DROP / "new-preview.png"
+
+        with patch("mod_manager.gui.is_image_file", return_value=True), patch(
+            "mod_manager.gui._run_import_batch", return_value=(["combat.pak.png"], [])
+        ) as import_batch, patch("mod_manager.gui.QtWidgets.QInputDialog.getItem") as picker, patch.object(
+            self.window, "refresh_mods"
+        ) as refresh_mods:
+            self.window._handle_mods_drop([image_path], target_mod_name="combat.pak")
+
+        picker.assert_not_called()
+        import_batch.assert_called_once()
+        tasks = import_batch.call_args.args[1]
+        self.assertEqual(tasks, [("image", image_path, "combat.pak", False)])
+        self.assertNotIn(("combat.pak", 140), self.window.tile_delegate._pixmaps)
+        refresh_mods.assert_called_once_with(["combat.pak"])
+
+    def test_drop_position_maps_to_mod_name_in_tile_view(self):
+        index = self.window.mods_model.index(1, 0)
+
+        with patch.object(self.window.tiles_view, "indexAt", return_value=index):
+            mod_name = self.window._mod_name_at_view_position(self.window.tiles_view.viewport(), QtCore.QPoint(12, 12))
+
+        self.assertEqual(mod_name, "ui.pak")
 
 
 if __name__ == "__main__":

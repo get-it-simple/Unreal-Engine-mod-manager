@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
 import shutil
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
+
+REQUIRED_RUNTIME_PACKAGES = {"PySide6": "PySide6>=6.7.0"}
+REQUIRED_EXE_PACKAGES = {"PyInstaller": "pyinstaller>=6.0.0"}
 
 def _remove(path: Path) -> None:
     if path.is_dir():
@@ -44,13 +49,43 @@ def _build_pyz() -> int:
     print(f"Built {out_path}")
     return 0
 
+def _missing_packages(modules: dict[str, str]) -> list[str]:
+    return [requirement for module, requirement in modules.items() if importlib.util.find_spec(module) is None]
+
+def _prompt_install(packages: list[str]) -> bool:
+    if not packages:
+        return True
+    if not sys.stdin.isatty():
+        print(f"Missing required package(s): {', '.join(packages)}")
+        print("Run: python -m pip install -r requirements.txt")
+        return False
+    answer = input(f"Install missing package(s) now: {', '.join(packages)}? [y/N] ").strip().lower()
+    if answer not in {"y", "yes"}:
+        print("Build cancelled.")
+        return False
+    cmd = [sys.executable, "-m", "pip", "install", *packages]
+    return subprocess.call(cmd) == 0
+
+def _ensure_packages(modules: dict[str, str]) -> bool:
+    missing = _missing_packages(modules)
+    if not missing:
+        return True
+    if not _prompt_install(missing):
+        return False
+    still_missing = _missing_packages(modules)
+    if still_missing:
+        print(f"Package check failed after install: {', '.join(still_missing)}")
+        return False
+    return True
+
 def _build_exe(onefile: bool) -> int:
-    pyinstaller = shutil.which("pyinstaller")
-    if not pyinstaller:
-        return _build_pyz()
+    if not _ensure_packages({**REQUIRED_RUNTIME_PACKAGES, **REQUIRED_EXE_PACKAGES}):
+        return 1
     mode = "--onefile" if onefile else "--onedir"
     cmd = [
-        pyinstaller,
+        sys.executable,
+        "-m",
+        "PyInstaller",
         "-y",
         mode,
         "--windowed",
@@ -76,6 +111,8 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     build_exe = args.exe or (not args.pyz and os.environ.get("MOD_MANAGER_BUILD_EXE") == "1")
     onefile = args.onefile or (not args.onedir and os.environ.get("MOD_MANAGER_ONEFILE") == "1")
+    if not build_exe and not _ensure_packages(REQUIRED_RUNTIME_PACKAGES):
+        return 1
     if not args.no_clean_before:
         _clean_before()
     result = _build_exe(onefile) if build_exe else _build_pyz()

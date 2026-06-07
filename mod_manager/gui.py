@@ -1,32 +1,21 @@
 from __future__ import annotations
 
-import base64
-import io
+import importlib.util
 import locale as _locale
-import queue
-import threading
-import tkinter as tk
-import tkinter.font as tkfont
-from functools import partial
+from datetime import datetime
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
-from typing import Callable, Dict, List
+from typing import Callable, List
 
-
-def _sys_str(key: str) -> str:
-    try:
-        lang = (_locale.getdefaultlocale()[0] or "en").split("_")[0].lower()
-    except Exception:
-        lang = "en"
-    _T: dict[str, dict[str, str]] = {
-        "install":   {"uk": "Встановити", "ru": "Установить", "de": "Installieren", "fr": "Installer", "pl": "Zainstaluj", "it": "Installa", "es": "Instalar"},
-        "uninstall": {"uk": "Видалити",   "ru": "Удалить",    "de": "Deinstallieren", "fr": "Désinstaller", "pl": "Odinstaluj", "it": "Disinstalla", "es": "Desinstalar"},
-    }
-    return _T.get(key, {}).get(lang, key.capitalize())
+try:
+    from PySide6 import QtCore, QtGui, QtWidgets
+except ModuleNotFoundError:
+    QtCore = None
+    QtGui = None
+    QtWidgets = None
 
 from .cli_utils import ensure_paths, open_folder, select_in_explorer
-from .image import load_scaled as _load_image_gdi
-from .log import logger
+from .dragdrop import read_clipboard_image, read_clipboard_paths
+from .models import ModItem
 from .mods import (
     add_label_to_mods,
     apply_mods_page,
@@ -39,2047 +28,1487 @@ from .mods import (
     list_broken_links,
     list_installed_mods,
     mod_image_path,
-    mods_view,
     mods_records,
+    mods_view,
     remove_label_from_mods,
     toggle_mods_by_indexes,
 )
-from .presets import delete_presets_by_indexes, presets_records, presets_view, save_preset_from_installed, toggle_presets_by_indexes
-from .dragdrop import WindowsDropTarget, read_clipboard_image, read_clipboard_paths
+from .presets import (
+    delete_presets_by_indexes,
+    presets_records,
+    presets_view,
+    save_preset_from_installed,
+    toggle_presets_by_indexes,
+)
 from .storage import load_config, save_config
-from .workers import WorkerPool, _run_import_batch, _run_deactivate_batch, _run_save_settings
-
-class AutocompleteCombobox(ttk.Combobox):
-    def __init__(self, master, **kwargs):
-        super().__init__(master, **kwargs)
-        self._all_values: List[str] = []
-        self.bind("<KeyRelease>", self._on_keyrelease)
-
-    def set_completion_values(self, values: List[str]) -> None:
-        self._all_values = sorted({str(v) for v in values if v})
-        self["values"] = self._all_values
-
-    def _on_keyrelease(self, event) -> None:
-        if event.keysym in ["BackSpace", "Left", "Right", "Up", "Down", "Return", "Escape", "Tab"]:
-            return
-        text = self.get().lower()
-        self["values"] = [v for v in self._all_values if text in v.lower()] if text else self._all_values
-
-class WrapFrame(ttk.Frame):
-    def __init__(self, master, **kwargs):
-        super().__init__(master, **kwargs)
-        self.items = []
-        self._placed_h = 0
-        self.bind("<Configure>", lambda _event: self.after_idle(self._arrange))
-
-    def add(self, widget, padx=0, pady=3, sticky="w") -> None:
-        self.items.append((widget, padx, pady, sticky))
-        self.after_idle(self._arrange)
-
-    def _pad_width(self, padx) -> int:
-        if isinstance(padx, tuple):
-            return int(padx[0]) + int(padx[1])
-        return int(padx) * 2
-
-    def _arrange(self) -> None:
-        width = max(1, self.winfo_width())
-        for widget, *_ in self.items:
-            widget.grid_forget()
-            widget.place_forget()
-        rows: list = []
-        row: list = []
-        used = 0
-        for item in self.items:
-            need = item[0].winfo_reqwidth() + self._pad_width(item[1])
-            if row and used + need > width:
-                rows.append(row)
-                row = []
-                used = 0
-            row.append(item)
-            used += need
-        if row:
-            rows.append(row)
-        y = 0
-        for row_items in rows:
-            rh = max((w.winfo_reqheight() for w, *_ in row_items), default=28)
-            rp = max((it[2] for it in row_items), default=3)
-            x = 0
-            for widget, padx, pady, sticky in row_items:
-                pl = padx[0] if isinstance(padx, tuple) else padx
-                pr = padx[1] if isinstance(padx, tuple) else padx
-                x += pl
-                wh = widget.winfo_reqheight()
-                widget.place(x=x, y=y + rp + (rh - wh) // 2)
-                x += widget.winfo_reqwidth() + pr
-            y += rh + rp * 2
-        h = max(1, y)
-        if self._placed_h != h:
-            self._placed_h = h
-            self.configure(height=h)
-
-class ScrollableTabFrame(ttk.Frame):
-    def __init__(self, master, padding=0, **kwargs):
-        super().__init__(master, **kwargs)
-        self._vscroll = ttk.Scrollbar(self, orient="vertical")
-        self._canvas = tk.Canvas(self, yscrollcommand=self._vscroll.set, highlightthickness=0, bd=0)
-        self._canvas.grid(row=0, column=0, sticky="nsew")
-        self._vscroll.grid(row=0, column=1, sticky="ns")
-        self.rowconfigure(0, weight=1)
-        self.columnconfigure(0, weight=1)
-        self._vscroll.configure(command=self._canvas.yview)
-        self.inner = ttk.Frame(self._canvas, padding=padding)
-        self._win_id = self._canvas.create_window((0, 0), window=self.inner, anchor="nw")
-        self.inner.bind("<Configure>", self._update_scrollregion)
-        self._canvas.bind("<Configure>", self._update_inner_width)
-
-    def _update_scrollregion(self, _event=None):
-        req_h = self.inner.winfo_reqheight()
-        canvas_h = self._canvas.winfo_height()
-        self._canvas.configure(scrollregion=(0, 0, self._canvas.winfo_width(), req_h))
-        if req_h > canvas_h:
-            self._vscroll.grid(row=0, column=1, sticky="ns")
-        else:
-            self._vscroll.grid_remove()
-            self._canvas.yview_moveto(0)
-
-    def _update_inner_width(self, event):
-        self._canvas.itemconfig(self._win_id, width=event.width)
-        self._update_scrollregion()
-
-    def scroll_y(self, delta: int) -> None:
-        if self.inner.winfo_reqheight() > self._canvas.winfo_height():
-            self._canvas.yview_scroll(delta, "units")
-
-class _Tooltip:
-    _DELAY = 100
-
-    def __init__(self, widget, text: str):
-        self._widget = widget
-        self._text = text
-        self._tip = None
-        self._job = None
-        widget.bind("<Enter>", self._schedule, add="+")
-        widget.bind("<Leave>", self._cancel, add="+")
-        widget.bind("<ButtonPress>", self._cancel, add="+")
-
-    def _schedule(self, _=None):
-        self._cancel()
-        self._job = self._widget.after(self._DELAY, self._show)
-
-    def _cancel(self, _=None):
-        if self._job:
-            self._widget.after_cancel(self._job)
-            self._job = None
-        if self._tip:
-            self._tip.destroy()
-            self._tip = None
-
-    def _show(self):
-        if self._tip:
-            return
-        x = self._widget.winfo_rootx()
-        y = self._widget.winfo_rooty() + self._widget.winfo_height() + 4
-        self._tip = tk.Toplevel(self._widget)
-        self._tip.wm_overrideredirect(True)
-        self._tip.wm_geometry(f"+{x}+{y}")
-        ttk.Label(self._tip, text=self._text, relief="solid", padding=(6, 3)).pack()
+from .workers import WorkerPool, _run_import_batch, _run_save_settings
 
 
-class ModManagerGui(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title("Mod Manager")
-        self.cfg = load_config()
-        w = max(880, int(self.cfg.get("window_width", 1200)))
-        h = max(560, int(self.cfg.get("window_height", 750)))
-        self.geometry(f"{w}x{h}")
-        self.minsize(880, 560)
-        self._resize_job = None
-        self.mod_page = tk.IntVar(value=1)
-        self.preset_page = tk.IntVar(value=1)
-        self.search_var = tk.StringVar()
-        self.label_filter_var = tk.StringVar()
-        self.label_edit_var = tk.StringVar()
-        self.order_var = tk.StringVar(value=self.cfg.get("order_var", "Default"))
-        self.mod_view_mode = tk.StringVar(value=self.cfg.get("mod_view_mode", "list"))
-        self.status_var = tk.StringVar()
-        self.placeholder_images: Dict[str, tk.PhotoImage] = {}
-        self.current_mod_items = []
-        self.current_mods_shown = []
-        self.current_mod_labels = {}
-        self.current_mod_records = {}
-        self.current_broken = []
-        self.drop_targets = []
-        self.busy = False
-        self.action_widgets = []
-        self.mod_selection_widgets = []
-        self.tile_windows: dict = {}  # mod_index → (tk.Frame, canvas_window_id)
-        self.tile_columns = 1
-        self.tile_canvas_width = 0
-        self.tile_selected_index = 0
-        self.tile_selected_indices: set = set()
-        self.tile_rendered_range = (0, 0)
-        self.list_render_offset = 0
-        self.list_selected_index = 0
-        self.list_rendered_range = (0, 0)
-        self.tile_layout_job = None
-        self._tile_img_cache: dict = {}      # (mod_name, size) → tk.PhotoImage
-        self._tile_details_done: set = set() # indices with image+label placed in frame
-        self._tile_worker_q: queue.Queue = queue.Queue()
-        self._tile_result_q: queue.Queue = queue.Queue()
-        self._tile_worker_thread: threading.Thread | None = None
-        self._tile_worker_version: int = 0
-        self._tile_result_poll_job: str | None = None
-        self._detail_pil_cache: dict = {}
-        self._detail_img_mod: str | None = None
-        self._detail_img_frame: tk.Widget | None = None
-        self._detail_img_label: tk.Widget | None = None
-        self._detail_img_photo: tk.PhotoImage | None = None
-        self._detail_img_resize_job: str | None = None
-        self._view_btn_list: tk.Button | None = None
-        self._view_btn_tiles: tk.Button | None = None
-        self.detail_wrap_labels = []
-        self.updating_mod_selection = False
-        self.mod_sort_key = self.cfg.get("mod_sort_key", "d")
-        self.mod_sort_reverse = bool(self.cfg.get("mod_sort_reverse", False))
-        self.preset_sort_key = self.cfg.get("preset_sort_key", "name")
-        self.preset_sort_reverse = bool(self.cfg.get("preset_sort_reverse", False))
-        self.order_var.trace_add("write", self._save_order_setting)
-        self.ui_scale_values = ["25%", "50%", "75%", "100%", "125%", "150%", "175%", "200%"]
-        self._scroll_frames: list = []
-        self._pool = WorkerPool()
-        self._poll_job: str | None = None
-        self._apply_gui_style()
-        self._build()
-        self.bind_all("<MouseWheel>", self._on_mousewheel)
-        self.bind_all("<Control-v>", self._handle_paste)
-        self._bind_navigation_events()
-        self.drop_targets.append(WindowsDropTarget(self, self._handle_mods_drop))
-        self.drop_targets.append(WindowsDropTarget(self.mods_tree, self._handle_mods_drop))
-        self.bind("<Configure>", self._on_window_configure)
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
-        self._start_polling()
-        self._tile_result_poll_job = self.after(16, self._tile_result_poll)
-        self.refresh_all()
+def _sys_str(key: str) -> str:
+    try:
+        lang = (_locale.getdefaultlocale()[0] or "en").split("_")[0].lower()
+    except Exception:
+        lang = "en"
+    translations = {
+        "install": {"uk": "Встановити", "ru": "Установить", "de": "Installieren", "fr": "Installer", "pl": "Zainstaluj", "it": "Installa", "es": "Instalar"},
+        "uninstall": {"uk": "Видалити", "ru": "Удалить", "de": "Deinstallieren", "fr": "Désinstaller", "pl": "Odinstaluj", "it": "Installa", "es": "Desinstalar"},
+    }
+    return translations.get(key, {}).get(lang, key.capitalize())
 
-    def _on_window_configure(self, event) -> None:
-        if event.widget is not self:
-            return
-        if self._resize_job:
-            self.after_cancel(self._resize_job)
-        self._resize_job = self.after(500, self._save_window_size)
 
-    def _start_polling(self) -> None:
-        results = self._pool.poll()
-        if results:
-            self._pool.fire_callbacks(results)
-        self._poll_job = self.after(50, self._start_polling)
+class _Var:
+    def __init__(self, value=None, on_change: Callable | None = None):
+        self._value = value
+        self._on_change = on_change
 
-    def _on_close(self) -> None:
-        if self._poll_job:
-            self.after_cancel(self._poll_job)
-        if self._tile_result_poll_job:
-            self.after_cancel(self._tile_result_poll_job)
-        self._pool.shutdown()
-        try:
-            if self._is_tile_view():
-                sash = self.tile_pane.sashpos(0)
-                total = self.tile_pane.winfo_width()
-                if total > 0:
-                    list_w = sash
-                    detail_w = total - sash
-                    if list_w >= 80 and detail_w >= 80:
-                        self.cfg["_tile_list_width"] = list_w
-                        self.cfg["_tile_detail_width"] = detail_w
-                        save_config(self.cfg)
-        except Exception:
-            pass
-        self.destroy()
+    def get(self):
+        return self._value
 
-    def _safe_bind_all(self, sequence: str, callback: Callable) -> None:
-        try:
-            self.bind_all(sequence, callback)
-        except tk.TclError:
-            pass
+    def set(self, value) -> None:
+        self._value = value
+        if self._on_change:
+            self._on_change()
 
-    def _bind_navigation_events(self) -> None:
-        for sequence in ["<BackSpace>", "<Button-4>", "<KeyPress-XF86Back>", "<KeyPress-BrowserBack>", "<KeyPress-MediaPrevious>"]:
-            self._safe_bind_all(sequence, self._nav_back)
-        for sequence in ["<Button-5>", "<KeyPress-XF86Forward>", "<KeyPress-BrowserForward>", "<KeyPress-MediaNext>"]:
-            self._safe_bind_all(sequence, self._nav_forward)
-        for sequence in ["<Up>", "<Down>", "<Left>", "<Right>"]:
-            self._safe_bind_all(sequence, self._on_arrow_key)
-        for sequence in ["<Control-plus>", "<Control-equal>", "<Control-KP_Add>"]:
-            self._safe_bind_all(sequence, lambda _event: self._zoom_tiles(1))
-        for sequence in ["<Control-minus>", "<Control-KP_Subtract>"]:
-            self._safe_bind_all(sequence, lambda _event: self._zoom_tiles(-1))
 
-    def _is_mods_tab_active(self) -> bool:
-        try:
-            return self.notebook.index(self.notebook.select()) == 0
-        except Exception:
-            return False
+if QtCore is not None:
 
-    def _is_tile_view(self) -> bool:
-        return self.mod_view_mode.get() == "tiles"
+    class ModTableModel(QtCore.QAbstractTableModel):
+        HEADERS = ("Mod", "Label", "Last managed")
 
-    def _nav_back(self, event=None):
-        if not self._is_mods_tab_active():
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.mods: list[ModItem] = []
+            self.labels: dict[str, str] = {}
+            self.records: dict[str, dict] = {}
+
+        def set_data(self, mods: list[ModItem], labels: dict, records: dict) -> None:
+            self.beginResetModel()
+            self.mods = list(mods)
+            self.labels = dict(labels or {})
+            self.records = dict(records or {})
+            self.endResetModel()
+
+        def rowCount(self, parent=QtCore.QModelIndex()) -> int:
+            return 0 if parent.isValid() else len(self.mods)
+
+        def columnCount(self, parent=QtCore.QModelIndex()) -> int:
+            return 0 if parent.isValid() else len(self.HEADERS)
+
+        def headerData(self, section, orientation, role=QtCore.Qt.DisplayRole):
+            if role == QtCore.Qt.DisplayRole and orientation == QtCore.Qt.Horizontal:
+                return self.HEADERS[section]
             return None
-        self._change_mod_page(-1)
-        return "break"
 
-    def _nav_forward(self, event=None):
-        if not self._is_mods_tab_active():
-            return None
-        self._change_mod_page(1)
-        return "break"
-
-    def _on_arrow_key(self, event):
-        if not self._is_mods_tab_active():
-            return None
-        keysym = getattr(event, "keysym", "")
-        if self._is_tile_view():
-            moves = {
-                "Left": -1,
-                "Right": 1,
-                "Up": -max(1, self.tile_columns),
-                "Down": max(1, self.tile_columns),
-            }
-            delta = moves.get(keysym)
-            if delta is None:
+        def data(self, index, role=QtCore.Qt.DisplayRole):
+            if not index.isValid():
                 return None
-            self._select_tile_index(self.tile_selected_index + delta)
-            return "break"
-        if keysym not in ("Up", "Down") or not self.current_mods_shown:
+            mod = self.mods[index.row()]
+            label = self.labels.get(mod.name, "-")
+            last = self.records.get(mod.name, {}).get("last_managed") or "-"
+            if role == QtCore.Qt.UserRole:
+                return mod
+            if role == QtCore.Qt.DisplayRole:
+                if index.column() == 0:
+                    return ("[installed] " if mod.installed else "") + mod.name
+                if index.column() == 1:
+                    return label
+                return last
+            if role == QtCore.Qt.FontRole and mod.installed:
+                font = QtGui.QFont()
+                font.setBold(True)
+                return font
             return None
-        delta = 1 if keysym == "Down" else -1
-        new_index = max(0, min(self.list_selected_index + delta, len(self.current_mods_shown) - 1))
-        self.list_selected_index = new_index
-        self.tile_selected_index = new_index
-        visible = self._list_visible_rows()
-        if new_index < self.list_render_offset:
-            self.list_render_offset = new_index
-        elif new_index >= self.list_render_offset + visible:
-            self.list_render_offset = max(0, new_index - visible + 1)
-        self._refresh_mod_list()
-        iid = str(new_index + 1)
-        if self.mods_tree.exists(iid):
-            self.updating_mod_selection = True
-            try:
-                self.mods_tree.selection_set(iid)
-                self.mods_tree.focus(iid)
-            finally:
-                self.updating_mod_selection = False
-        return "break"
 
-    def _save_window_size(self) -> None:
-        self._resize_job = None
-        w = self.winfo_width()
-        h = self.winfo_height()
-        if w > 0 and h > 0:
-            self.cfg["window_width"] = w
-            self.cfg["window_height"] = h
-            save_config(self.cfg)
 
-    def _on_mousewheel(self, event) -> None:
-        ctrl_held = bool(getattr(event, "state", 0) & 0x4)
-        if self._is_mods_tab_active() and self._is_tile_view():
-            if ctrl_held:
-                return self._zoom_tiles(1 if event.delta > 0 else -1)
-            self._on_tile_scroll("scroll", int(-1 * (event.delta / 120)), "units")
-            return "break"
-        if self._is_mods_tab_active() and not self._is_tile_view():
-            self._on_list_scroll("scroll", int(-1 * (event.delta / 120)), "units")
-            return "break"
-        w = self.winfo_containing(event.x_root, event.y_root)
-        while w:
-            if isinstance(w, ttk.Treeview):
-                if event.widget is not w:
-                    w.yview_scroll(int(-1 * (event.delta / 120)), "units")
-                return
-            if isinstance(w, ScrollableTabFrame):
-                w.scroll_y(int(-1 * (event.delta / 120)))
-                return
-            w = getattr(w, "master", None)
+    class PresetTableModel(QtCore.QAbstractTableModel):
+        HEADERS = ("Preset", "State", "Mods", "Last managed")
 
-    def _resize_notebook_tabs(self) -> None:
-        nb = getattr(self, "notebook", None)
-        if not nb:
-            return
-        tabs = nb.tabs()
-        if not tabs:
-            return
-        scale = self._ui_scale()
-        hpad = max(6, int(14 * scale))
-        vpad = max(4, int(8 * scale))
-        for tab_id in tabs:
-            nb.tab(tab_id, padding=(hpad, vpad))
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.presets: dict[str, list[str]] = {}
+            self.keys: list[str] = []
+            self.records: dict[str, dict] = {}
 
-    def _ui_scale(self) -> float:
-        try:
-            raw = self.cfg.get("ui_scale_percent") or self.cfg.get("button_size_percent", 100)
-            value = str(raw).strip().rstrip("%")
-            return max(25, int(value)) / 100
-        except Exception:
-            return 1
+        def set_data(self, presets: dict, keys: list[str], records: dict) -> None:
+            self.beginResetModel()
+            self.presets = dict(presets or {})
+            self.keys = list(keys or [])
+            self.records = dict(records or {})
+            self.endResetModel()
 
-    def _apply_gui_style(self) -> None:
-        font_family = (self.cfg.get("gui_font_family") or "").strip()
-        try:
-            base_font_size = max(6, int(self.cfg.get("gui_font_size", 10)))
-        except Exception:
-            base_font_size = 10
-        scale = self._ui_scale()
-        font_size = max(6, round(base_font_size * scale))
-        for font_name in ["TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont"]:
-            try:
-                options = {"size": font_size}
-                if font_family:
-                    options["family"] = font_family
-                tkfont.nametofont(font_name).configure(**options)
-            except tk.TclError:
-                pass
-        style = ttk.Style(self)
-        style.configure("TButton", padding=(int(12 * scale), int(7 * scale)))
-        style.configure("Treeview", rowheight=max(30, int(34 * scale)))
-        style.configure("Mods.Treeview", rowheight=max(30, int(34 * scale)))
+        def rowCount(self, parent=QtCore.QModelIndex()) -> int:
+            return 0 if parent.isValid() else len(self.keys)
 
-    def _rebuild_tabs(self) -> None:
-        self.tile_windows.clear()
-        self.tile_rendered_range = (0, 0)
-        self._tile_details_done.clear()
-        self._tile_img_cache.clear()
-        self._detail_pil_cache.clear()
-        self._tile_worker_version += 1
-        try:
-            while True:
-                self._tile_worker_q.get_nowait()
-        except queue.Empty:
-            pass
-        self.action_widgets.clear()
-        self.mod_selection_widgets.clear()
-        for tab in [self.mods_tab, self.presets_tab, self.settings_tab, self.broken_tab]:
-            for child in tab.winfo_children():
-                child.destroy()
-        self._apply_gui_style()
-        self._build_mods()
-        self._build_presets()
-        self._build_settings()
-        self._build_broken()
-        self.drop_targets = self.drop_targets[:1]
-        self.drop_targets.append(WindowsDropTarget(self.mods_tree, self._handle_mods_drop))
-        self.after_idle(self._resize_notebook_tabs)
+        def columnCount(self, parent=QtCore.QModelIndex()) -> int:
+            return 0 if parent.isValid() else len(self.HEADERS)
 
-    def _build(self) -> None:
-        root = ttk.Frame(self, padding=(4, 6))
-        root.pack(fill="both", expand=True)
-        self.notebook = ttk.Notebook(root)
-        self.notebook.pack(fill="both", expand=True)
-        self.notebook.bind("<Configure>", lambda _e: self.after_idle(self._resize_notebook_tabs))
-
-        def _tab(text: str) -> ttk.Frame:
-            sf = ScrollableTabFrame(self.notebook, padding=(4, 6))
-            self._scroll_frames.append(sf)
-            self.notebook.add(sf, text=text)
-            return sf.inner
-
-        mods_outer = ttk.Frame(self.notebook, padding=(4, 6))
-        self.notebook.add(mods_outer, text="⊞  Mods")
-        self.mods_tab = mods_outer
-        self.presets_tab  = _tab("☰  Presets")
-        self.settings_tab = _tab("⚙  Settings")
-        self.broken_tab   = _tab("⚠  Broken")
-        self._build_mods()
-        self._build_presets()
-        self._build_settings()
-        self._build_broken()
-        status = ttk.Label(root, textvariable=self.status_var, anchor="w")
-        status.pack(fill="x", pady=(8, 0))
-
-    def _button(self, master, text: str, command: Callable, tooltip: str = ""):
-        scale = self._ui_scale()
-        width = max(3, int(4 * scale)) if len(text) <= 3 else max(int(14 * scale), len(text) + 2)
-        btn = ttk.Button(master, text=text, command=command, width=width)
-        if tooltip:
-            _Tooltip(btn, tooltip)
-        self.action_widgets.append(btn)
-        return btn
-
-    def _on_mod_selection_changed(self) -> None:
-        tree = getattr(self, "mods_tree", None)
-        if not tree or self.busy or self.updating_mod_selection:
-            return
-        if self._is_tile_view():
-            valid = [i for i in sorted(self.tile_selected_indices) if 0 <= i < len(self.current_mods_shown)]
-            n = len(valid)
-            if n == 0:
-                self._refresh_mod_detail(None)
-                state = "disabled"
-            elif n == 1:
-                self._refresh_mod_detail(self.current_mods_shown[valid[0]])
-                state = "normal"
-            else:
-                self._refresh_multi_detail([self.current_mods_shown[i] for i in valid])
-                state = "normal"
-        else:
-            selection = tree.selection()
-            if selection and str(selection[0]).isdigit():
-                index = int(selection[0]) - 1
-                if 0 <= index < len(self.current_mods_shown):
-                    self.list_selected_index = index
-                    self.tile_selected_index = index
-                    self._refresh_mod_detail(self.current_mods_shown[index])
-            state = "normal" if selection else "disabled"
-        for w in self.mod_selection_widgets:
-            try:
-                w.configure(state=state)
-            except tk.TclError:
-                pass
-
-    def _set_busy(self, busy: bool, text: str = "") -> None:
-        self.busy = busy
-        state = "disabled" if busy else "normal"
-        for widget in self.action_widgets:
-            try:
-                widget.configure(state=state)
-            except tk.TclError:
-                pass
-        if not busy:
-            self._on_mod_selection_changed()
-        self.configure(cursor="watch" if busy else "")
-        if text:
-            self.status_var.set(text)
-        self.update_idletasks()
-
-    def _run_action(self, label: str, worker: Callable, done: Callable | None = None, file_key: str = "global") -> None:
-        if self.busy:
-            return
-        logger.info("action: %s", label)
-        self._set_busy(True, f"{label}...")
-
-        def callback(result, error):
-            self.after(0, lambda: self._finish_action(error, result, done))
-
-        self._pool.submit(file_key, worker, callback=callback)
-
-    def _finish_action(self, error, result, done: Callable | None) -> None:
-        try:
-            if error:
-                logger.error("action error: %s", error)
-                self.status_var.set(str(error))
-                messagebox.showerror("Error", str(error))
-            elif done:
-                done(result)
-                logger.info("action result: %s", self.status_var.get())
-        finally:
-            self._set_busy(False)
-
-    def _build_mods(self) -> None:
-        top = WrapFrame(self.mods_tab)
-        top.pack(fill="x")
-        top.add(ttk.Label(top, text="Search"))
-        self.search_box = AutocompleteCombobox(top, textvariable=self.search_var, width=24)
-        self.search_box.bind("<Return>", lambda e: self._mods_search())
-        top.add(self.search_box, padx=(6, 12))
-        top.add(ttk.Label(top, text="Label"))
-        self.label_filter_box = AutocompleteCombobox(top, textvariable=self.label_filter_var, width=18)
-        self.label_filter_box.bind("<Return>", lambda e: self._mods_search())
-        top.add(self.label_filter_box, padx=(6, 12))
-        top.add(ttk.Label(top, text="Order"))
-        top.add(ttk.Combobox(top, textvariable=self.order_var, values=["Default", "Created date"], width=14, state="readonly"), padx=(6, 12))
-        self._view_btn_list = tk.Button(top, text="☰", width=2, relief="groove", cursor="hand2",
-                                        command=lambda: self._set_view_mode("list"))
-        _Tooltip(self._view_btn_list, "List view")
-        self._view_btn_tiles = tk.Button(top, text="⊞", width=2, relief="groove", cursor="hand2",
-                                         command=lambda: self._set_view_mode("tiles"))
-        _Tooltip(self._view_btn_tiles, "Tile view")
-        top.add(self._view_btn_list, padx=(6, 0))
-        top.add(self._view_btn_tiles, padx=(2, 12))
-        self._update_view_buttons()
-        top.add(self._button(top, "↺", self._mods_search, "Search / Refresh"))
-        top.add(self._button(top, "✕", self._mods_clear, "Clear"), padx=(6, 0))
-        self.mods_view_area = ttk.Frame(self.mods_tab)
-        self.mods_view_area.pack(fill="both", expand=True, pady=8)
-        self.mods_view_area.pack_propagate(False)
-        self.mods_list_frame = ttk.Frame(self.mods_view_area)
-        self.mods_tree = ttk.Treeview(self.mods_list_frame, columns=("name", "label", "last"), show="tree headings", selectmode="extended", style="Mods.Treeview")
-        self.mods_tree_scroll = ttk.Scrollbar(self.mods_list_frame, orient="vertical", command=self._on_list_scroll)
-        self.mods_tree.heading("#0", text="")
-        self.mods_tree.heading("name", text="Mod", command=lambda: self._sort_mods("name"))
-        self.mods_tree.heading("label", text="Label", command=lambda: self._sort_mods("label"))
-        self.mods_tree.heading("last", text="Last managed", command=lambda: self._sort_mods("last_managed"))
-        self.mods_tree.column("#0", width=int(self.cfg.get("placeholder_image_col_width", 56)), minwidth=36, stretch=False, anchor="center")
-        self.mods_tree.column("name", width=470)
-        self.mods_tree.column("label", width=160)
-        self.mods_tree.column("last", width=160, stretch=False)
-        self.mods_tree.tag_configure("installed", background="#d4edda")
-        self.mods_tree.bind("<ButtonRelease-1>", self._save_placeholder_width)
-        self.mods_tree.bind("<Double-1>", lambda _: self._toggle_selected_mods())
-        self.mods_tree.bind("<<TreeviewSelect>>", lambda _: self._on_mod_selection_changed())
-        self.mods_tree.bind("<Configure>", lambda _event: self._refresh_mod_list())
-        self.mods_tree.grid(row=0, column=0, sticky="nsew")
-        self.mods_tree_scroll.grid(row=0, column=1, sticky="ns")
-        self.mods_list_frame.rowconfigure(0, weight=1)
-        self.mods_list_frame.columnconfigure(0, weight=1)
-        self.tile_pane = ttk.Panedwindow(self.mods_view_area, orient="horizontal")
-        tile_outer = ttk.Frame(self.tile_pane)
-        self.tile_canvas = tk.Canvas(tile_outer, highlightthickness=0, bd=0)
-        self.tile_scroll = ttk.Scrollbar(tile_outer, orient="vertical", command=self._on_tile_scroll)
-        self.tile_canvas.configure(yscrollcommand=self.tile_scroll.set)
-        self.tile_canvas.grid(row=0, column=0, sticky="nsew")
-        self.tile_scroll.grid(row=0, column=1, sticky="ns")
-        tile_outer.rowconfigure(0, weight=1)
-        tile_outer.columnconfigure(0, weight=1)
-        self.tile_canvas.bind("<Configure>", self._on_tile_canvas_configure)
-        self.detail_frame = ttk.Frame(self.tile_pane, padding=(10, 4))
-        self.detail_frame.bind("<Configure>", self._update_detail_wrap)
-        self.tile_pane.add(tile_outer, weight=3)
-        self.tile_pane.add(self.detail_frame, weight=2)
-        actions = WrapFrame(self.mods_tab)
-        actions.pack(fill="x", side="bottom")
-        actions.configure(height=max(44, int(52 * self._ui_scale())))
-        actions.add(self._button(actions, "<", lambda: self._change_mod_page(-1), "Previous page"))
-        actions.add(self._button(actions, ">", lambda: self._change_mod_page(1), "Next page"), padx=(6, 12))
-        actions.add(ttk.Label(actions, text="Page"))
-        mod_page_spin = ttk.Spinbox(actions, from_=1, to=9999, textvariable=self.mod_page, width=6, command=self.refresh_mods)
-        self.action_widgets.append(mod_page_spin)
-        actions.add(mod_page_spin, padx=(6, 12))
-        actions.add(self._button(actions, "▼✓", self._install_page, "Install page"))
-        actions.add(self._button(actions, "▲✗", self._uninstall_page, "Uninstall page"), padx=(6, 0))
-        toggle_btn = self._button(actions, "⇅✓", self._toggle_selected_mods, "Toggle selected")
-        actions.add(toggle_btn, padx=(6, 12))
-        self.mod_selection_widgets.append(toggle_btn)
-        actions.add(self._button(actions, "📥", self._import_mod_files, "Import mods"), padx=(6, 0))
-        actions.add(self._button(actions, "📂", self._import_mod_folder, "Import folder"), padx=(6, 0))
-        img_btn = self._button(actions, "🖼", self._set_mod_image, "Set image")
-        actions.add(img_btn, padx=(6, 12))
-        self.mod_selection_widgets.append(img_btn)
-        label_group = ttk.Frame(actions)
-        ttk.Label(label_group, text="Label").pack(side="left")
-        self.label_edit_box = AutocompleteCombobox(label_group, textvariable=self.label_edit_var, width=18)
-        self.label_edit_box.pack(side="left", padx=(6, 6))
-        self.mod_selection_widgets.append(self.label_edit_box)
-        add_btn = self._button(label_group, "+", self._add_label_selected, "Add label")
-        add_btn.pack(side="left")
-        self.mod_selection_widgets.append(add_btn)
-        remove_btn = self._button(label_group, "-", self._remove_label_selected, "Remove label")
-        remove_btn.pack(side="left", padx=(6, 0))
-        self.mod_selection_widgets.append(remove_btn)
-        actions.add(label_group)
-        self.after_idle(self._on_mod_selection_changed)
-        self._show_mod_view()
-
-    def _build_presets(self) -> None:
-        top = WrapFrame(self.presets_tab)
-        top.pack(fill="x")
-        top.add(ttk.Label(top, text="Name"))
-        self.preset_name_box = AutocompleteCombobox(top, width=30)
-        top.add(self.preset_name_box, padx=(6, 8))
-        top.add(self._button(top, "Save", self._save_preset))
-        top.add(self._button(top, "Refresh", self.refresh_presets), padx=(6, 0))
-        self.presets_tree = ttk.Treeview(self.presets_tab, columns=("state", "mods", "last"), show="tree headings", selectmode="extended")
-        self.presets_tree.heading("#0", text="Preset", command=lambda: self._sort_presets("name"))
-        self.presets_tree.heading("state", text="State", command=lambda: self._sort_presets("state"))
-        self.presets_tree.heading("mods", text="Mods", command=lambda: self._sort_presets("mods"))
-        self.presets_tree.heading("last", text="Last managed", command=lambda: self._sort_presets("last_managed"))
-        self.presets_tree.column("#0", width=460)
-        self.presets_tree.column("state", width=90, anchor="center")
-        self.presets_tree.column("mods", width=90, anchor="center")
-        self.presets_tree.column("last", width=170)
-        self.presets_tree.tag_configure("applied", background="#d4edda")
-        self.presets_tree.pack(fill="both", expand=True, pady=8)
-        self.presets_tree.bind("<Double-1>", lambda e: self._toggle_selected_presets())
-        actions = WrapFrame(self.presets_tab)
-        actions.pack(fill="x")
-        actions.add(self._button(actions, "<", lambda: self._change_preset_page(-1), "Previous page"))
-        actions.add(self._button(actions, ">", lambda: self._change_preset_page(1), "Next page"), padx=(6, 12))
-        actions.add(ttk.Label(actions, text="Page"))
-        preset_page_spin = ttk.Spinbox(actions, from_=1, to=9999, textvariable=self.preset_page, width=6, command=self.refresh_presets)
-        self.action_widgets.append(preset_page_spin)
-        actions.add(preset_page_spin, padx=(6, 12))
-        actions.add(self._button(actions, "Toggle Selected", self._toggle_selected_presets))
-        actions.add(self._button(actions, "Delete Selected", self._delete_selected_presets), padx=(6, 0))
-
-    def _setting_preview_text(self, key: str, val: str) -> str:
-        if key == "link_prefix":
-            if val:
-                return f'"mod.pak"  →  "mod{val}.pak"'
-            return '"mod.pak"  →  "mod.pak"  (prefix not set)'
-        if key == "mod_extensions":
-            if not val:
-                return "All files included"
-            parts = [e.strip().lstrip(".") for e in val.split(",") if e.strip()]
-            return "Filter: " + ",  ".join(f".{p}" for p in parts if p)
-        return ""
-
-    def _build_settings(self) -> None:
-        self.setting_vars: Dict[str, tk.StringVar] = {}
-        rows = [
-            ("game_mods_dir", "Game mods folder"),
-            ("mods_source_dir", "Mods source folder"),
-            ("mod_extensions", "Mod extensions"),
-            ("link_prefix", "Link prefix"),
-            ("page_size", "Page size"),
-            ("max_mod_name_len", "Max mod name length"),
-            ("max_preset_name_len", "Max preset name length"),
-            ("max_label_name_len", "Max label name length"),
-            ("ui_scale_percent", "UI Scale"),
-            ("gui_font_family", "Font"),
-            ("gui_font_size", "Font size"),
-            ("mod_view_mode", "Mod view mode"),
-            ("tile_size", "Tile size"),
-            ("window_width", "Window width"),
-            ("window_height", "Window height"),
-        ]
-        preview_keys = {"mod_extensions", "link_prefix"}
-        for row, (key, label) in enumerate(rows):
-            ttk.Label(self.settings_tab, text=label).grid(row=row, column=0, sticky="nw", pady=4)
-            var = tk.StringVar(value=str(self.cfg.get(key, "")))
-            if key == "ui_scale_percent":
-                raw = self.cfg.get("ui_scale_percent") or self.cfg.get("button_size_percent", 100)
-                var = tk.StringVar(value=f"{str(raw).strip().rstrip('%')}%")
-            self.setting_vars[key] = var
-            if key == "ui_scale_percent":
-                ttk.Combobox(self.settings_tab, textvariable=var, values=self.ui_scale_values, state="readonly", width=12).grid(row=row, column=1, sticky="w", padx=8, pady=4)
-            elif key == "mod_view_mode":
-                ttk.Combobox(self.settings_tab, textvariable=var, values=["list", "tiles"], state="readonly", width=12).grid(row=row, column=1, sticky="w", padx=8, pady=4)
-            elif key == "gui_font_family":
-                ttk.Combobox(self.settings_tab, textvariable=var, values=sorted(tkfont.families()), width=40).grid(row=row, column=1, sticky="w", padx=8, pady=4)
-            elif key in preview_keys:
-                cell = ttk.Frame(self.settings_tab)
-                ttk.Entry(cell, textvariable=var).pack(fill="x")
-                preview_lbl = ttk.Label(cell, foreground="#888888")
-                preview_lbl.pack(anchor="w", pady=(2, 0))
-                cell.grid(row=row, column=1, sticky="ew", padx=8, pady=4)
-                def _update(*_, k=key, v=var, lbl=preview_lbl):
-                    lbl.config(text=self._setting_preview_text(k, v.get().strip()))
-                var.trace_add("write", _update)
-                _update(None)
-            else:
-                ttk.Entry(self.settings_tab, textvariable=var, width=70).grid(row=row, column=1, sticky="ew", padx=8, pady=4)
-            if key in ["game_mods_dir", "mods_source_dir"]:
-                self._button(self.settings_tab, "…", lambda k=key: self._browse_setting(k), "Browse").grid(row=row, column=2, pady=4)
-        self.settings_tab.columnconfigure(1, weight=1)
-        buttons = WrapFrame(self.settings_tab)
-        buttons.grid(row=len(rows), column=0, columnspan=3, sticky="ew", pady=(12, 0))
-        buttons.add(self._button(buttons, "✔", self._save_settings, "Save settings"))
-        buttons.add(self._button(buttons, "📁", lambda: self._open_folder("source"), "Open source folder"), padx=(8, 0))
-        buttons.add(self._button(buttons, "📁", lambda: self._open_folder("game"), "Open game folder"), padx=(8, 0))
-
-    def _build_broken(self) -> None:
-        top = WrapFrame(self.broken_tab)
-        top.pack(fill="x")
-        top.add(self._button(top, "↺", self.refresh_broken, "Refresh"))
-        top.add(self._button(top, "Remove Selected", self._remove_selected_broken), padx=(6, 0))
-        top.add(self._button(top, "Remove All", self._remove_all_broken), padx=(6, 0))
-        self.broken_tree = ttk.Treeview(self.broken_tab, columns=("kind", "source"), show="tree headings", selectmode="extended")
-        self.broken_tree.heading("#0", text="Mod")
-        self.broken_tree.heading("kind", text="Kind")
-        self.broken_tree.heading("source", text="Missing source")
-        self.broken_tree.column("#0", width=320)
-        self.broken_tree.column("kind", width=80, anchor="center")
-        self.broken_tree.column("source", width=520)
-        self.broken_tree.pack(fill="both", expand=True, pady=8)
-
-    def _view_args(self):
-        return max(1, int(self.mod_page.get() or 1)), self.label_filter_var.get().strip(), self.search_var.get().strip(), self._mod_order_mode()
-
-    def _on_mod_view_mode_changed(self) -> None:
-        mode = self.mod_view_mode.get()
-        if mode not in ["list", "tiles"]:
-            mode = "list"
-            self.mod_view_mode.set(mode)
-        self.cfg["mod_view_mode"] = mode
-        save_config(self.cfg)
-        self._update_view_buttons()
-        self._show_mod_view()
-        self.refresh_mods()
-
-    def _set_view_mode(self, mode: str) -> None:
-        self.mod_view_mode.set(mode)
-        self._on_mod_view_mode_changed()
-
-    def _update_view_buttons(self) -> None:
-        mode = self.mod_view_mode.get()
-        for btn, bmode in [(self._view_btn_list, "list"), (self._view_btn_tiles, "tiles")]:
-            if btn is None:
-                continue
-            try:
-                if not btn.winfo_exists():
-                    continue
-            except tk.TclError:
-                continue
-            if mode == bmode:
-                btn.configure(bg="#0078d4", fg="white", relief="flat")
-            else:
-                btn.configure(bg="SystemButtonFace", fg="SystemButtonText", relief="groove")
-
-    def _show_mod_view(self) -> None:
-        if not hasattr(self, "mods_tree"):
-            return
-        self.mods_list_frame.pack_forget()
-        self.tile_pane.pack_forget()
-        if self._is_tile_view():
-            self._sash_default_retried = 0
-            self.tile_pane.pack(in_=self.mods_view_area, fill="both", expand=True)
-            self.after_idle(self._restore_tile_sash)
-            self.after(200, self._restore_tile_sash)
-            self._refresh_mod_tiles()
-        else:
-            self.mods_list_frame.pack(in_=self.mods_view_area, fill="both", expand=True)
-            self._refresh_mod_list()
-
-    def _mod_order_mode(self) -> str:
-        if self.order_var.get().strip() == "Created date":
-            return "cd"
-        if self.mod_sort_key == "d":
-            return "d"
-        return f"-{self.mod_sort_key}" if self.mod_sort_reverse else self.mod_sort_key
-
-    def _preset_order_mode(self) -> str:
-        return f"-{self.preset_sort_key}" if self.preset_sort_reverse else self.preset_sort_key
-
-    def _sort_mods(self, key: str) -> None:
-        if self.mod_sort_key == key:
-            self.mod_sort_reverse = not self.mod_sort_reverse
-        else:
-            self.mod_sort_key = key
-            self.mod_sort_reverse = False
-        self.cfg["mod_sort_key"] = self.mod_sort_key
-        self.cfg["mod_sort_reverse"] = self.mod_sort_reverse
-        save_config(self.cfg)
-        self.mod_page.set(1)
-        self.refresh_mods()
-
-    def _sort_presets(self, key: str) -> None:
-        if self.preset_sort_key == key:
-            self.preset_sort_reverse = not self.preset_sort_reverse
-        else:
-            self.preset_sort_key = key
-            self.preset_sort_reverse = False
-        self.cfg["preset_sort_key"] = self.preset_sort_key
-        self.cfg["preset_sort_reverse"] = self.preset_sort_reverse
-        save_config(self.cfg)
-        self.preset_page.set(1)
-        self.refresh_presets()
-
-    def _save_order_setting(self, *_) -> None:
-        self.cfg["order_var"] = self.order_var.get()
-        save_config(self.cfg)
-
-    def _save_placeholder_width(self, _event=None) -> None:
-        width = int(self.mods_tree.column("#0", "width"))
-        if width != int(self.cfg.get("placeholder_image_col_width", 56)):
-            self.cfg["placeholder_image_col_width"] = width
-            save_config(self.cfg)
-            self.placeholder_images.clear()
-            self.refresh_mods()
-
-    def _image_width(self) -> int:
-        return max(16, int(self.mods_tree.column("#0", "width")) - 20)
-
-    def _tile_size(self) -> int:
-        try:
-            return max(88, min(260, int(self.cfg.get("tile_size", 140))))
-        except Exception:
-            return 140
-
-    def _list_row_height(self) -> int:
-        try:
-            return max(24, int(ttk.Style(self).lookup("Mods.Treeview", "rowheight") or 34))
-        except Exception:
-            return 34
-
-    def _list_visible_rows(self) -> int:
-        configured = str(self.mods_tree.cget("height") or "").strip()
-        if configured.isdigit():
-            return max(1, int(configured))
-        height = max(1, self.mods_tree.winfo_height() - self._list_row_height())
-        return max(1, height // self._list_row_height())
-
-    def _list_virtual_range(self) -> tuple[int, int]:
-        total = len(self.current_mods_shown)
-        if total <= 0:
-            return 0, 0
-        visible = self._list_visible_rows()
-        start = max(0, min(self.list_render_offset, max(0, total - visible)))
-        end = min(total, start + visible)
-        start = max(0, start - 1)
-        return start, end
-
-    def _sync_list_scrollbar(self) -> None:
-        total = len(self.current_mods_shown)
-        if total <= 0:
-            self.mods_tree_scroll.set(0, 1)
-            return
-        visible = self._list_visible_rows()
-        first = max(0, min(self.list_render_offset, max(0, total - visible))) / total
-        last = min(total, self.list_render_offset + visible) / total
-        self.mods_tree_scroll.set(first, max(first, last))
-
-    def _on_list_scroll(self, *args) -> None:
-        total = len(self.current_mods_shown)
-        if total <= 0:
-            return
-        visible = self._list_visible_rows()
-        max_offset = max(0, total - visible)
-        if args[0] == "moveto":
-            self.list_render_offset = min(max_offset, max(0, int(float(args[1]) * total)))
-        elif args[0] == "scroll":
-            amount = int(args[1])
-            unit = args[2] if len(args) > 2 else "units"
-            step = visible if unit == "pages" else 1
-            self.list_render_offset = max(0, min(max_offset, self.list_render_offset + amount * step))
-        self._refresh_mod_list()
-
-    def _on_tile_scroll(self, *args) -> None:
-        self.tile_canvas.yview(*args)
-        if self.tile_layout_job:
-            self.after_cancel(self.tile_layout_job)
-        self.tile_layout_job = self.after(40, self._refresh_mod_tiles)
-
-    def _zoom_tiles(self, direction: int):
-        if not self._is_mods_tab_active() or not self._is_tile_view():
+        def headerData(self, section, orientation, role=QtCore.Qt.DisplayRole):
+            if role == QtCore.Qt.DisplayRole and orientation == QtCore.Qt.Horizontal:
+                return self.HEADERS[section]
             return None
-        size = self._tile_size() + (12 if direction > 0 else -12)
-        self.cfg["tile_size"] = max(88, min(260, size))
-        save_config(self.cfg)
-        self.placeholder_images.clear()
-        self._tile_img_cache.clear()
-        self._refresh_mod_tiles(rebuild=True)
-        return "break"
 
-    def _insert_list_row(self, index: int, position) -> None:
-        mod = self.current_mods_shown[index]
-        rec = self.current_mod_records.get(mod.name, {})
-        image = self._placeholder(mod.name, mod.installed)
-        name_display = f"✓  {mod.name}" if mod.installed else mod.name
-        tags = ("installed",) if mod.installed else ()
-        self.mods_tree.insert(
-            "", position,
-            iid=str(index + 1), text="", image=image,
-            values=(name_display, self.current_mod_labels.get(mod.name, "-"), rec.get("last_managed") or "-"),
-            tags=tags,
-        )
+        def data(self, index, role=QtCore.Qt.DisplayRole):
+            if not index.isValid() or role != QtCore.Qt.DisplayRole:
+                return None
+            name = self.keys[index.row()]
+            rec = self.records.get(name, {})
+            values = (name, rec.get("state") or "-", str(len(self.presets.get(name, []))), rec.get("last_managed") or "-")
+            return values[index.column()]
 
-    def _refresh_mod_list(self) -> None:
-        if not hasattr(self, "mods_tree") or self._is_tile_view():
-            return
-        selected = self.mods_tree.selection()
-        selected_iids = set(selected)
-        start, end = self._list_virtual_range()
-        old_start, old_end = self.list_rendered_range
-        self.list_rendered_range = (start, end)
 
-        overlap_start = max(start, old_start)
-        overlap_end = min(end, old_end)
-        incremental = overlap_end > overlap_start and all(
-            self.mods_tree.exists(str(i + 1)) for i in range(overlap_start, overlap_end)
-        )
+    class BrokenTableModel(QtCore.QAbstractTableModel):
+        HEADERS = ("Broken link", "Destination")
 
-        if incremental:
-            gone_before = [str(i + 1) for i in range(old_start, start) if self.mods_tree.exists(str(i + 1))]
-            if gone_before:
-                self.mods_tree.delete(*gone_before)
-            gone_after = [str(i + 1) for i in range(end, old_end) if self.mods_tree.exists(str(i + 1))]
-            if gone_after:
-                self.mods_tree.delete(*gone_after)
-            for index in range(start, min(end, old_start)):
-                self._insert_list_row(index, index - start)
-            for index in range(max(start, old_end), end):
-                self._insert_list_row(index, "end")
-        else:
-            existing = self.mods_tree.get_children()
-            if existing:
-                self.mods_tree.delete(*existing)
-            for index in range(start, end):
-                self._insert_list_row(index, "end")
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.mods: list[ModItem] = []
 
-        visible_selected = [iid for iid in selected_iids if self.mods_tree.exists(iid)]
-        self.updating_mod_selection = True
-        try:
-            if visible_selected:
-                self.mods_tree.selection_set(visible_selected)
-            elif self.current_mods_shown and not selected_iids:
-                iid = str(self.list_selected_index + 1)
-                if self.mods_tree.exists(iid):
-                    self.mods_tree.selection_set(iid)
-                    self.mods_tree.focus(iid)
-        finally:
-            self.updating_mod_selection = False
-        self._sync_list_scrollbar()
+        def set_data(self, mods: list[ModItem]) -> None:
+            self.beginResetModel()
+            self.mods = list(mods)
+            self.endResetModel()
 
-    def _pixel_hex(self, color) -> str:
-        if isinstance(color, tuple):
-            return "#%02x%02x%02x" % color[:3]
-        return str(color)
+        def rowCount(self, parent=QtCore.QModelIndex()) -> int:
+            return 0 if parent.isValid() else len(self.mods)
 
-    def _center_in_frame(self, img: tk.PhotoImage, width: int, height: int, bg: str) -> tk.PhotoImage:
-        iw, ih = img.width(), img.height()
-        if iw == width and ih == height:
-            return img
-        frame = tk.PhotoImage(width=width, height=height)
-        frame.put(bg, to=(0, 0, width, height))
-        x_off = max(0, (width - iw) // 2)
-        y_off = max(0, (height - ih) // 2)
-        frame.tk.call(frame, "copy", img, "-to", x_off, y_off)
-        return frame
+        def columnCount(self, parent=QtCore.QModelIndex()) -> int:
+            return 0 if parent.isValid() else len(self.HEADERS)
 
-    def _resize_image(self, source: tk.PhotoImage, width: int) -> tk.PhotoImage:
-        source_w = max(1, source.width())
-        source_h = max(1, source.height())
-        height = max(1, int(source_h * width / source_w))
-        if source_w == width and source_h == height:
-            return source
-        img = tk.PhotoImage(width=width, height=height)
-        rows = []
-        for y in range(height):
-            source_y = min(source_h - 1, int(y * source_h / height))
-            colors = []
-            for x in range(width):
-                source_x = min(source_w - 1, int(x * source_w / width))
-                colors.append(self._pixel_hex(source.get(source_x, source_y)))
-            rows.append("{" + " ".join(colors) + "}")
-        img.put(" ".join(rows))
-        return img
+        def headerData(self, section, orientation, role=QtCore.Qt.DisplayRole):
+            if role == QtCore.Qt.DisplayRole and orientation == QtCore.Qt.Horizontal:
+                return self.HEADERS[section]
+            return None
 
-    def _placeholder(self, name: str, installed: bool = False, width: int | None = None) -> tk.PhotoImage:
-        width = width or self._image_width()
-        key = f"{name}:{width}:{installed}"
-        if key in self.placeholder_images:
-            return self.placeholder_images[key]
-        path = mod_image_path(self.cfg, name)
-        max_h = max(28, int(width * 0.65))
-        bg = "#d4edda" if installed else "white"
-        img = None
-        if path:
-            try:
-                raw = tk.PhotoImage(file=str(path))
-                src_w = max(1, raw.width())
-                src_h = max(1, raw.height())
-                fit_w = min(width, max(1, int(src_w * max_h / src_h)))
-                scaled = self._resize_image(raw, fit_w)
-                img = self._center_in_frame(scaled, width, max_h, bg)
-            except tk.TclError:
-                raw_gdi = _load_image_gdi(path, width, max_h)
-                if raw_gdi:
-                    img = self._center_in_frame(raw_gdi, width, max_h, bg)
-        if img is None:
-            img = tk.PhotoImage(width=width, height=max_h)
-            colors = ["#d9e8fb", "#e4f4de", "#f7e6d0", "#eadff7", "#f7dfe8"]
-            color = colors[sum(ord(c) for c in name) % len(colors)]
-            img.put(color, to=(0, 0, width, max_h))
-        self.placeholder_images[key] = img
-        return img
+        def data(self, index, role=QtCore.Qt.DisplayRole):
+            if not index.isValid():
+                return None
+            mod = self.mods[index.row()]
+            if role == QtCore.Qt.UserRole:
+                return mod
+            if role == QtCore.Qt.DisplayRole:
+                return mod.name if index.column() == 0 else str(mod.dest)
+            return None
 
-    def _update_tile_scrollregion(self) -> None:
-        if not hasattr(self, "tile_canvas"):
-            return
-        total = len(self.current_mods_shown)
-        columns = max(1, self.tile_columns)
-        rows = max(1, (total + columns - 1) // columns)
-        row_h = self._tile_row_height()
-        w = max(1, self.tile_canvas_width or self.tile_canvas.winfo_width())
-        self.tile_canvas.configure(scrollregion=(0, 0, w, rows * row_h))
 
-    def _on_tile_canvas_configure(self, event) -> None:
-        old_columns = self.tile_columns
-        self.tile_canvas_width = max(1, event.width)
-        new_columns = self._tile_column_count()
-        if self._is_tile_view() and self.current_mods_shown and new_columns != old_columns:
-            self.tile_columns = new_columns
-            self._refresh_mod_tiles(rebuild=True)
-        else:
-            self._update_tile_scrollregion()
+    class TileDelegate(QtWidgets.QStyledItemDelegate):
+        def __init__(self, cfg: dict, parent=None):
+            super().__init__(parent)
+            self.cfg = cfg
+            self._pixmaps: dict[tuple[str, int], QtGui.QPixmap] = {}
 
-    def _tile_column_count(self) -> int:
-        width = max(1, self.tile_canvas_width or self.tile_canvas.winfo_width())
-        tile_w = self._tile_size() + 18
-        return max(1, width // tile_w)
+        def paint(self, painter, option, index) -> None:
+            painter.save()
+            mod = index.data(QtCore.Qt.UserRole)
+            label = index.model().labels.get(mod.name, "-")
+            selected = bool(option.state & QtWidgets.QStyle.State_Selected)
+            rect = option.rect.adjusted(6, 6, -6, -6)
+            bg = QtGui.QColor("#dbeafe" if selected else "#ffffff")
+            painter.setPen(QtGui.QPen(QtGui.QColor("#94a3b8")))
+            painter.setBrush(bg)
+            painter.drawRoundedRect(rect, 6, 6)
 
-    def _tile_row_height(self) -> int:
-        fh = getattr(self, "_tile_frame_h", None)
-        if fh is None:
-            return self._tile_size() + 68
-        return fh + 12
-
-    def _tile_virtual_range(self) -> tuple[int, int]:
-        total = len(self.current_mods_shown)
-        if total <= 0:
-            return 0, 0
-        columns = max(1, self.tile_columns)
-        row_h = self._tile_row_height()
-        y0 = self.tile_canvas.canvasy(0)
-        height = max(1, self.tile_canvas.winfo_height())
-        first_row = max(0, int(y0 // row_h) - 3)
-        last_row = int((y0 + height) // row_h) + 3
-        start = max(0, first_row * columns)
-        end = min(total, (last_row + 1) * columns)
-        return start, end
-
-    def _set_tile_bg(self, actual_index: int, selected: bool) -> None:
-        entry = self.tile_windows.get(actual_index)
-        if entry is None:
-            return
-        frame, _ = entry
-        mod = self.current_mods_shown[actual_index] if actual_index < len(self.current_mods_shown) else None
-        bg = "#cfe8ff" if selected else ("#d4edda" if mod and mod.installed else "#f7f7f7")
-        hl = "#3777b8" if selected else bg
-        frame.configure(bg=bg, highlightbackground=hl)
-        for child in frame.winfo_children():
-            try:
-                child.configure(bg=bg)
-            except tk.TclError:
-                pass
-
-    def _select_tile_index(self, index: int, event=None) -> None:
-        if not self.current_mods_shown:
-            self.tile_selected_index = 0
-            self.tile_selected_indices.clear()
-            self.mods_tree.selection_remove(self.mods_tree.selection())
-            self._on_mod_selection_changed()
-            return
-        total = len(self.current_mods_shown)
-        index = max(0, min(index, total - 1))
-
-        ctrl = bool(event and event.state & 0x0004)
-        shift = bool(event and event.state & 0x0001)
-
-        prev_selected = set(self.tile_selected_indices)
-
-        if ctrl:
-            if index in self.tile_selected_indices:
-                self.tile_selected_indices.discard(index)
+            image_rect = QtCore.QRect(rect.left() + 8, rect.top() + 8, rect.width() - 16, max(48, rect.width() - 18))
+            pixmap = self._pixmap_for(mod, image_rect.size())
+            if pixmap.isNull():
+                painter.fillRect(image_rect, QtGui.QColor("#e2e8f0"))
+                painter.setPen(QtGui.QColor("#64748b"))
+                painter.drawText(image_rect, QtCore.Qt.AlignCenter, "No image")
             else:
-                self.tile_selected_indices.add(index)
-            self.tile_selected_index = index
-        elif shift and self.tile_selected_indices:
-            anchor = self.tile_selected_index
-            lo, hi = min(anchor, index), max(anchor, index)
-            self.tile_selected_indices = set(range(lo, hi + 1))
-        else:
-            self.tile_selected_indices = {index}
-            self.tile_selected_index = index
+                painter.drawPixmap(image_rect, pixmap)
 
-        self.list_selected_index = self.tile_selected_index
-        if len(self.tile_selected_indices) == 1:
-            iid = str(self.tile_selected_index + 1)
-            if iid in self.mods_tree.get_children():
-                self.updating_mod_selection = True
-                try:
-                    self.mods_tree.selection_set(iid)
-                    self.mods_tree.focus(iid)
-                    self.mods_tree.see(iid)
-                finally:
-                    self.updating_mod_selection = False
+            if mod.installed:
+                badge = QtCore.QRect(rect.left() + 12, rect.top() + 12, 72, 22)
+                painter.setBrush(QtGui.QColor("#16a34a"))
+                painter.setPen(QtCore.Qt.NoPen)
+                painter.drawRoundedRect(badge, 4, 4)
+                painter.setPen(QtGui.QColor("#ffffff"))
+                painter.drawText(badge, QtCore.Qt.AlignCenter, "Installed")
 
-        changed = prev_selected.symmetric_difference(self.tile_selected_indices)
-        for i in changed:
-            self._set_tile_bg(i, i in self.tile_selected_indices)
+            text_rect = QtCore.QRect(rect.left() + 8, image_rect.bottom() + 8, rect.width() - 16, 44)
+            painter.setPen(QtGui.QColor("#0f172a"))
+            painter.drawText(text_rect, QtCore.Qt.TextWordWrap | QtCore.Qt.AlignTop, mod.name)
+            label_rect = QtCore.QRect(rect.left() + 8, text_rect.bottom() + 4, rect.width() - 16, 20)
+            painter.setPen(QtGui.QColor("#475569"))
+            painter.drawText(label_rect, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, label)
+            painter.restore()
 
-        self._scroll_tile_to_visible(index)
-        self._on_mod_selection_changed()
+        def sizeHint(self, option, index):
+            size = max(96, int(self.cfg.get("tile_size", 140)))
+            return QtCore.QSize(size + 28, size + 92)
 
-    def _scroll_tile_to_visible(self, index: int) -> None:
-        if not hasattr(self, "tile_canvas"):
-            return
-        columns = max(1, self.tile_columns)
-        row_h = self._tile_row_height()
-        total = len(self.current_mods_shown)
-        total_rows = max(1, (total + columns - 1) // columns)
-        total_h = total_rows * row_h
-        tile_row = index // columns
-        y_top = tile_row * row_h
-        y_bot = y_top + row_h
-        canvas_h = max(1, self.tile_canvas.winfo_height())
-        y0 = self.tile_canvas.canvasy(0)
-        y1 = y0 + canvas_h
-        if y_top < y0:
-            self.tile_canvas.yview_moveto(y_top / total_h)
-            self._refresh_mod_tiles()
-        elif y_bot > y1:
-            self.tile_canvas.yview_moveto(max(0.0, (y_bot - canvas_h) / total_h))
-            self._refresh_mod_tiles()
+        def _pixmap_for(self, mod: ModItem, size: QtCore.QSize) -> QtGui.QPixmap:
+            key = (mod.name, max(size.width(), size.height()))
+            if key in self._pixmaps:
+                return self._pixmaps[key]
+            img_path = mod_image_path(self.cfg, mod.name)
+            pixmap = QtGui.QPixmap(str(img_path)) if img_path else QtGui.QPixmap()
+            if not pixmap.isNull():
+                pixmap = pixmap.scaled(size, QtCore.Qt.KeepAspectRatioByExpanding, QtCore.Qt.SmoothTransformation)
+                if pixmap.width() > size.width() or pixmap.height() > size.height():
+                    x = max(0, (pixmap.width() - size.width()) // 2)
+                    y = max(0, (pixmap.height() - size.height()) // 2)
+                    pixmap = pixmap.copy(x, y, size.width(), size.height())
+            self._pixmaps[key] = pixmap
+            return pixmap
 
-    def _refresh_mod_tiles(self, rebuild: bool = False) -> None:
-        if not hasattr(self, "tile_canvas") or not self._is_tile_view():
-            return
-        if self.tile_layout_job:
-            self.after_cancel(self.tile_layout_job)
-        self.tile_layout_job = None
 
-        if rebuild:
-            self._tile_worker_version += 1
-            self._tile_details_done.clear()
-            try:
-                while True:
-                    self._tile_worker_q.get_nowait()
-            except queue.Empty:
-                pass
-            for frame, wid in list(self.tile_windows.values()):
-                try:
-                    self.tile_canvas.delete(wid)
-                    frame.destroy()
-                except tk.TclError:
-                    pass
-            self.tile_windows.clear()
-            self.tile_rendered_range = (0, 0)
+    class ModListView(QtWidgets.QListView):
+        zoomRequested = QtCore.Signal(int)
 
-        total = len(self.current_mods_shown)
-        self.tile_columns = self._tile_column_count()
-        columns = max(1, self.tile_columns)
-
-        if total == 0:
-            self._update_tile_scrollregion()
-            self._refresh_mod_detail(None)
-            return
-
-        self.tile_selected_index = max(0, min(self.tile_selected_index, total - 1))
-
-        try:
-            line_h = tkfont.nametofont("TkDefaultFont").metrics("linespace")
-        except Exception:
-            line_h = 16
-        name_h = line_h * 2 + 4
-        size = self._tile_size()
-        frame_w = size + 12
-        frame_h = size + 14 + name_h + 8
-        self._tile_frame_h = frame_h
-        row_h = self._tile_row_height()
-
-        start, end = self._tile_virtual_range()
-
-        for idx in [i for i in list(self.tile_windows) if i < start or i >= end]:
-            frame, wid = self.tile_windows.pop(idx)
-            self._tile_details_done.discard(idx)
-            try:
-                self.tile_canvas.delete(wid)
-                frame.destroy()
-            except tk.TclError:
-                pass
-
-        for index in range(start, end):
-            if index in self.tile_windows:
-                continue
-            mod = self.current_mods_shown[index]
-            row, col = divmod(index, columns)
-            selected = (index in self.tile_selected_indices)
-            mod_bg = "#d4edda" if mod.installed else "#f7f7f7"
-            bg = "#cfe8ff" if selected else mod_bg
-            hl = "#3777b8" if selected else bg
-            frame = tk.Frame(self.tile_canvas, bg=bg, bd=0, highlightthickness=2, highlightbackground=hl)
-            frame.configure(width=frame_w, height=frame_h)
-            frame.grid_propagate(False)
-            x = col * (frame_w + 12) + 6
-            y = row * row_h + 6
-            wid = self.tile_canvas.create_window(x, y, window=frame, anchor="nw", width=frame_w, height=frame_h)
-            frame.bind("<Button-1>", lambda e, i=index: self._select_tile_index(i, e))
-            frame.bind("<Double-1>", lambda _event: self._toggle_selected_mods())
-            self.tile_windows[index] = (frame, wid)
-            if (mod.name, size) in self._tile_img_cache:
-                self._fill_tile_detail(index, mod.name, mod.installed, size, b"")
-            else:
-                self._tile_worker_submit(index, mod.name, mod.installed, size)
-
-        self.tile_rendered_range = (start, end)
-        if rebuild:
-            self._update_tile_scrollregion()
-
-    def _tile_worker_submit(self, index: int, mod_name: str, installed: bool, size: int) -> None:
-        img_path = str(mod_image_path(self.cfg, mod_name) or "")
-        version = self._tile_worker_version
-        if not img_path or not Path(img_path).exists():
-            self.after_idle(lambda: self._tile_result_arrived(version, index, mod_name, installed, size, b""))
-            return
-        self._tile_worker_q.put((version, index, mod_name, installed, size, img_path))
-        if self._tile_worker_thread is None or not self._tile_worker_thread.is_alive():
-            self._tile_worker_thread = threading.Thread(target=self._tile_worker_run, daemon=True)
-            self._tile_worker_thread.start()
-
-    def _tile_worker_run(self) -> None:
-        from PIL import Image as _PILImage
-        while True:
-            try:
-                item = self._tile_worker_q.get(timeout=2.0)
-            except queue.Empty:
-                self._tile_result_q.put(None)
+        def wheelEvent(self, event) -> None:
+            if event.modifiers() & QtCore.Qt.ControlModifier:
+                self.zoomRequested.emit(1 if event.angleDelta().y() > 0 else -1)
+                event.accept()
                 return
-            if item is None:
-                self._tile_result_q.put(None)
+            super().wheelEvent(event)
+
+
+    class DetailImageLabel(QtWidgets.QLabel):
+        def __init__(self, pixmap: QtGui.QPixmap, parent=None):
+            super().__init__(parent)
+            self._source_pixmap = pixmap
+            self._target_size = QtCore.QSize(1, 1)
+            self.setAlignment(QtCore.Qt.AlignHCenter | QtCore.Qt.AlignTop)
+            self.setMinimumWidth(0)
+            self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+
+        def resizeEvent(self, event) -> None:
+            super().resizeEvent(event)
+            self.update_scaled_pixmap()
+
+        def update_scaled_pixmap(self, size: QtCore.QSize | None = None) -> None:
+            if self._source_pixmap.isNull():
                 return
-            version, index, mod_name, installed, size, img_path = item
-            ppm_bytes = b""
-            try:
-                if img_path and Path(img_path).exists():
-                    max_h = max(28, int(size * 0.65))
-                    with _PILImage.open(img_path) as im:
-                        orig_w, orig_h = im.size
-                        if orig_w and orig_h:
-                            scale = min(size / orig_w, max_h / orig_h)
-                            tw = max(1, int(orig_w * scale))
-                            th = max(1, int(orig_h * scale))
-                            resized = im.convert("RGB").resize((tw, th), _PILImage.LANCZOS)
-                            buf = io.BytesIO()
-                            resized.save(buf, format="PNG")
-                            ppm_bytes = buf.getvalue()
-            except Exception:
-                pass
-            self._tile_result_q.put((version, index, mod_name, installed, size, ppm_bytes))
-
-    def _tile_result_poll(self) -> None:
-        filled = 0
-        try:
-            while filled < 4:
-                item = self._tile_result_q.get_nowait()
-                if item is not None:
-                    version, index, mod_name, installed, size, ppm_bytes = item
-                    self._tile_result_arrived(version, index, mod_name, installed, size, ppm_bytes)
-                    filled += 1
-        except queue.Empty:
-            pass
-        self._tile_result_poll_job = self.after(16, self._tile_result_poll)
-
-    def _tile_result_arrived(self, version: int, index: int, mod_name: str, installed: bool, size: int, ppm_bytes: bytes) -> None:
-        if version != self._tile_worker_version:
-            return
-        if index not in self.tile_windows or index in self._tile_details_done:
-            return
-        self._fill_tile_detail(index, mod_name, installed, size, ppm_bytes)
-
-    def _fill_tile_detail(self, index: int, mod_name: str, installed: bool, size: int, ppm_bytes: bytes) -> None:
-        entry = self.tile_windows.get(index)
-        if entry is None:
-            return
-        frame, _wid = entry
-        try:
-            if not frame.winfo_exists():
-                return
-        except tk.TclError:
-            return
-        cache_key = (mod_name, size)
-        img = self._tile_img_cache.get(cache_key)
-        if img is None:
-            if ppm_bytes:
-                try:
-                    img = tk.PhotoImage(data=base64.b64encode(ppm_bytes).decode())
-                except tk.TclError:
-                    pass
-            if img is None:
-                max_h = max(28, int(size * 0.65))
-                colors = ["#d9e8fb", "#e4f4de", "#f7e6d0", "#eadff7", "#f7dfe8"]
-                color = colors[sum(ord(c) for c in mod_name) % len(colors)]
-                img = tk.PhotoImage(width=size, height=max_h)
-                img.put(color, to=(0, 0, size, max_h))
-            self._tile_img_cache[cache_key] = img
-        bg = frame.cget("bg")
-        frame_w = size + 12
-        try:
-            line_h = tkfont.nametofont("TkDefaultFont").metrics("linespace")
-        except Exception:
-            line_h = 16
-        name_h = line_h * 2 + 4
-        btn_h = getattr(self, "_tile_btn_h", None) or max(22, line_h + 6)
-        image_label = tk.Label(frame, image=img, bg=bg)
-        image_label.image = img
-        image_label.place(x=(frame_w - size) // 2, y=6, width=size, height=size)
-        title = f"✓ {mod_name}" if installed else mod_name
-        name_label = tk.Label(frame, text=title, bg=bg, wraplength=frame_w - 16, justify="center", anchor="n")
-        name_label.place(x=4, y=size + 12, width=frame_w - 8, height=name_h)
-        for widget in [image_label, name_label]:
-            widget.bind("<Button-1>", lambda e, i=index: self._select_tile_index(i, e))
-            widget.bind("<Double-1>", lambda _event: self._toggle_selected_mods())
-        self._tile_details_done.add(index)
-
-    def _detail_row(self, parent, label: str, value: str, row: int) -> None:
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="nw", pady=2)
-        value_label = ttk.Label(parent, text=value, wraplength=max(120, parent.winfo_width() - 120), justify="left")
-        value_label.grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=2)
-        parent.columnconfigure(1, weight=1)
-        self.detail_wrap_labels.append(value_label)
-
-    def _detail_path_row(self, parent, label: str, path: Path, row: int) -> None:
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="nw", pady=2)
-        value_label = ttk.Label(
-            parent,
-            text=str(path),
-            wraplength=max(120, parent.winfo_width() - 120),
-            justify="left",
-            cursor="hand2",
-            foreground="#0063b1",
-        )
-        value_label.grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=2)
-        value_label.bind("<Button-1>", lambda _e, p=path: select_in_explorer(p))
-        parent.columnconfigure(1, weight=1)
-        self.detail_wrap_labels.append(value_label)
-
-    def _toggle_label_filter(self, label: str) -> None:
-        label = (label or "").strip()
-        if not label or label == "-":
-            return
-        if self.label_filter_var.get().strip().lower() == label.lower():
-            self.label_filter_var.set("")
-        else:
-            self.label_filter_var.set(label)
-        self.mod_page.set(1)
-        self.refresh_mods()
-
-    def _detail_label_row(self, parent, value: str, row: int) -> None:
-        ttk.Label(parent, text="Label").grid(row=row, column=0, sticky="nw", pady=2)
-        active = bool(value and value != "-" and self.label_filter_var.get().strip().lower() == value.lower())
-        text = value if value and value != "-" else "-"
-        suffix = " (active)" if active else ""
-        label_button = ttk.Label(
-            parent,
-            text=text + suffix,
-            relief="solid",
-            padding=(4, 0),
-            cursor="hand2" if value and value != "-" else "",
-        )
-        if value and value != "-":
-            label_button._command = lambda v=value: self._toggle_label_filter(v)
-            label_button.bind("<Button-1>", lambda _event: label_button._command())
-        label_button.grid(row=row, column=1, sticky="w", padx=(8, 0), pady=2)
-        parent.columnconfigure(1, weight=1)
-
-    def _refresh_multi_detail(self, mods: list) -> None:
-        if not hasattr(self, "detail_frame"):
-            return
-        if self._detail_img_resize_job:
-            self.after_cancel(self._detail_img_resize_job)
-            self._detail_img_resize_job = None
-        self._detail_img_mod = None
-        self._detail_img_frame = None
-        self._detail_img_label = None
-        for child in self.detail_frame.winfo_children():
-            child.destroy()
-        self.detail_wrap_labels = []
-        n = len(mods)
-        installed = sum(1 for m in mods if m.installed)
-        not_installed = n - installed
-        ttk.Label(
-            self.detail_frame,
-            text=f"{n} mods selected",
-            font=("TkDefaultFont", 12, "bold"),
-        ).pack(anchor="w", fill="x")
-        info = ttk.Frame(self.detail_frame)
-        info.pack(fill="x", pady=(8, 0))
-        if installed:
-            ttk.Label(info, text=f"✓ {installed} installed").pack(anchor="w")
-        if not_installed:
-            ttk.Label(info, text=f"○ {not_installed} not installed").pack(anchor="w")
-        tk.Button(
-            self.detail_frame,
-            text=_sys_str("install") if not_installed else _sys_str("uninstall"),
-            bg="#28a745" if not_installed else "#c0392b",
-            fg="white",
-            activebackground="#1e7e34" if not_installed else "#a93226",
-            activeforeground="white",
-            relief="flat", bd=0, cursor="hand2",
-            command=self._toggle_selected_mods,
-        ).pack(fill="x", pady=(10, 0))
-
-    def _refresh_mod_detail(self, mod: ModItem | None) -> None:
-        if not hasattr(self, "detail_frame"):
-            return
-        if self._detail_img_resize_job:
-            self.after_cancel(self._detail_img_resize_job)
-            self._detail_img_resize_job = None
-        self._detail_img_mod = None
-        self._detail_img_frame = None
-        self._detail_img_label = None
-        for child in self.detail_frame.winfo_children():
-            child.destroy()
-        self.detail_wrap_labels = []
-        if not mod:
-            ttk.Label(self.detail_frame, text="No mod selected").pack(anchor="w")
-            return
-        rec = self.current_mod_records.get(mod.name, {})
-        ttk.Label(self.detail_frame, text=mod.name, font=("TkDefaultFont", 12, "bold")).pack(anchor="w", fill="x")
-        btn_text = _sys_str("uninstall") if mod.installed else _sys_str("install")
-        btn_bg = "#c0392b" if mod.installed else "#28a745"
-        btn_active = "#a93226" if mod.installed else "#1e7e34"
-        tk.Button(
-            self.detail_frame, text=btn_text, bg=btn_bg, fg="white",
-            activebackground=btn_active, activeforeground="white",
-            relief="flat", bd=0, cursor="hand2",
-            command=self._toggle_selected_mods,
-        ).pack(fill="x", pady=(8, 0))
-        status = ttk.Frame(self.detail_frame)
-        status.pack(fill="x", pady=(10, 0))
-        label_value = self.current_mod_labels.get(mod.name) or "-"
-        rows = [
-            ("Type", "Folder" if mod.is_dir else "File"),
-            ("Last managed", rec.get("last_managed") or "-"),
-        ]
-        self._detail_row(status, rows[0][0], rows[0][1], 0)
-        self._detail_label_row(status, label_value, 1)
-        for row, (label, value) in enumerate(rows[1:], start=2):
-            self._detail_row(status, label, value, row)
-        base = 2 + len(rows[1:])
-        self._detail_path_row(status, "Source", mod.src, base)
-        self._detail_path_row(status, "Destination", mod.dest, base + 1)
-        img_container = ttk.Frame(self.detail_frame)
-        img_container.pack(fill="both", expand=True, pady=(12, 0))
-        self._detail_img_mod = mod.name
-        self._detail_img_frame = img_container
-        img_container.bind("<Configure>", self._on_detail_img_resize)
-        self.after_idle(self._do_detail_img_render)
-
-    def _update_detail_wrap(self, _event=None) -> None:
-        if not hasattr(self, "detail_frame"):
-            return
-        wrap = max(160, self.detail_frame.winfo_width() - 32)
-        for label in self.detail_wrap_labels:
-            try:
-                label.configure(wraplength=wrap)
-            except tk.TclError:
-                pass
-
-    def _on_detail_img_resize(self, _event=None) -> None:
-        if self._detail_img_resize_job:
-            self.after_cancel(self._detail_img_resize_job)
-        self._detail_img_resize_job = self.after(50, self._do_detail_img_render)
-
-    def _do_detail_img_render(self) -> None:
-        self._detail_img_resize_job = None
-        frame = self._detail_img_frame
-        mod_name = self._detail_img_mod
-        if not frame or not mod_name:
-            return
-        try:
-            if not frame.winfo_exists():
-                return
-        except tk.TclError:
-            return
-        w = frame.winfo_width()
-        h = frame.winfo_height()
-        if w <= 4 or h <= 4:
-            return
-        img_path = mod_image_path(self.cfg, mod_name)
-        if not img_path or not Path(img_path).exists():
-            if not frame.winfo_children():
-                ttk.Label(frame, text="No image", anchor="center").pack(fill="both", expand=True)
-            return
-        photo = self._render_detail_photo(mod_name, str(img_path), w, h)
-        if photo is None:
-            return
-        existing = frame.winfo_children()
-        if existing and isinstance(existing[0], tk.Label):
-            try:
-                existing[0].configure(image=photo)
-                existing[0].image = photo
-            except tk.TclError:
-                existing = []
-        if not existing or not isinstance(existing[0], tk.Label):
-            for child in frame.winfo_children():
-                try:
-                    child.destroy()
-                except tk.TclError:
-                    pass
-            lbl = tk.Label(frame, image=photo, bg="black")
-            lbl.image = photo
-            lbl.pack(fill="both", expand=True)
-            self._detail_img_label = lbl
-        self._detail_img_photo = photo
-
-    def _render_detail_photo(self, mod_name: str, img_path: str, max_w: int, max_h: int) -> tk.PhotoImage | None:
-        pil_img = self._detail_pil_cache.get(mod_name)
-        if pil_img is None:
-            try:
-                from PIL import Image as _PILImage
-                with _PILImage.open(img_path) as im:
-                    im.load()
-                    pil_img = im.copy()
-                self._detail_pil_cache[mod_name] = pil_img
-            except Exception:
-                pass
-        if pil_img is not None:
-            try:
-                from PIL import Image as _PILImage
-                orig_w, orig_h = pil_img.size
-                if orig_w and orig_h:
-                    scale = min(max_w / orig_w, max_h / orig_h)
-                    tw = max(1, int(orig_w * scale))
-                    th = max(1, int(orig_h * scale))
-                    resized = pil_img.convert("RGB").resize((tw, th), _PILImage.LANCZOS)
-                    buf = io.BytesIO()
-                    resized.save(buf, format="PNG")
-                    return tk.PhotoImage(data=base64.b64encode(buf.getvalue()).decode())
-            except Exception:
-                pass
-        return _load_image_gdi(Path(img_path), max_w, max_h)
-
-    def _restore_tile_sash(self) -> None:
-        if not hasattr(self, "tile_pane"):
-            return
-        try:
-            total = self.tile_pane.winfo_width()
-            if total <= 1:
-                retries = getattr(self, "_sash_default_retried", 0)
-                if retries < 8:
-                    self._sash_default_retried = retries + 1
-                    self.after(150, self._restore_tile_sash)
-                return
-            detail_w = self.cfg.get("_tile_detail_width")
-            if detail_w and int(detail_w) >= 80:
-                sash = max(120, total - int(detail_w))
-            else:
-                sash = int(total * 0.6)
-            self.tile_pane.sashpos(0, sash)
-        except Exception:
-            pass
-
-    def _handle_mods_drop(self, paths, x: int, y: int) -> None:
-        if self.busy or not ensure_paths(self.cfg):
-            return
-        image_paths = [p for p in paths if is_image_file(p)]
-        mod_paths = [p for p in paths if is_mod_file(p, self.cfg)]
-        tasks = []
-        tree_x = x - self.mods_tree.winfo_rootx()
-        tree_y = y - self.mods_tree.winfo_rooty()
-        row = self.mods_tree.identify_row(tree_y) if 0 <= tree_x <= self.mods_tree.winfo_width() and 0 <= tree_y <= self.mods_tree.winfo_height() else ""
-        if image_paths:
-            default_name = ""
-            if row and row.isdigit():
-                index = int(row)
-                if 1 <= index <= len(self.current_mods_shown):
-                    default_name = self.current_mods_shown[index - 1].name
-            if default_name:
-                for path in image_paths:
-                    tasks.append(("image", path, default_name, True))
-        for path in mod_paths:
-            dst_exists = ((self.cfg.get("mods_source_dir") or "") and any(m.name == path.name for m in self.current_mod_items))
-            replace = True
-            if dst_exists:
-                replace = messagebox.askyesno("Replace mod", f"Replace existing mod '{path.name}'?")
-            if replace:
-                tasks.append(("mod", path, "", dst_exists))
-        if not tasks:
-            self.status_var.set("No supported dropped files.")
-            return
-
-        def done(result) -> None:
-            imported, skipped = result
-            self.placeholder_images.clear()
-            self.status_var.set(f"Imported: {len(imported)}. Skipped: {len(skipped)}.")
-            self.refresh_mods()
-
-        self._run_action("Importing dropped files", partial(_run_import_batch, self.cfg, tasks), done, file_key="import")
-
-    def _handle_paste(self, event=None) -> None:
-        focused = self.focus_get()
-        if isinstance(focused, (tk.Entry, ttk.Entry, ttk.Combobox, tk.Text, ttk.Spinbox)):
-            return
-        try:
-            if self.notebook.index(self.notebook.select()) != 0:
-                return
-        except Exception:
-            return
-        paths = read_clipboard_paths()
-        if paths:
-            self._handle_clipboard_paths(paths)
-            return
-        img_path = read_clipboard_image()
-        if img_path:
-            self._handle_clipboard_paths([img_path])
-            return
-        self.status_var.set("Clipboard: no files.")
-
-    def _handle_clipboard_paths(self, paths: List[Path]) -> None:
-        if self.busy or not ensure_paths(self.cfg):
-            return
-        image_paths = [p for p in paths if is_image_file(p)]
-        mod_paths = [p for p in paths if is_mod_file(p, self.cfg)]
-        tasks = []
-        if image_paths:
-            indexes = self._selected_indexes(self.mods_tree)
-            default_name = ""
-            if indexes and 1 <= indexes[0] <= len(self.current_mods_shown):
-                default_name = self.current_mods_shown[indexes[0] - 1].name
-            if not default_name:
-                default_name = self._choose_mod_for_image("")
-            if default_name:
-                for path in image_paths:
-                    tasks.append(("image", path, default_name, True))
-        for path in mod_paths:
-            exists = any(m.name == path.name for m in self.current_mod_items)
-            replace = True
-            if exists:
-                replace = messagebox.askyesno("Replace mod", f"Replace existing mod '{path.name}'?")
-            if replace:
-                tasks.append(("mod", path, "", exists))
-        if not tasks:
-            self.status_var.set("Clipboard: no supported files.")
-            return
-
-        def done(result) -> None:
-            imported, skipped = result
-            self.placeholder_images.clear()
-            self.status_var.set(f"Imported: {len(imported)}. Skipped: {len(skipped)}.")
-            self.refresh_mods()
-
-        self._run_action("Importing clipboard files", partial(_run_import_batch, self.cfg, tasks), done, file_key="import")
-
-    def _import_paths(self, paths: List[Path]) -> None:
-        if self.busy or not ensure_paths(self.cfg):
-            return
-        tasks = []
-        for path in paths:
-            if not is_mod_file(path, self.cfg):
-                continue
-            exists = any(m.name == path.name for m in self.current_mod_items)
-            replace = True
-            if exists:
-                replace = messagebox.askyesno("Replace mod", f"Replace existing mod '{path.name}'?")
-            if replace:
-                tasks.append((path, exists))
-        if not tasks:
-            self.status_var.set("No supported mod files.")
-            return
-
-        batch = [("mod", path, "", replace) for path, replace in tasks]
-
-        def done(result) -> None:
-            imported, skipped = result
-            self.status_var.set(f"Imported: {len(imported)}. Skipped: {len(skipped)}.")
-            self.refresh_mods()
-
-        self._run_action("Importing mods", partial(_run_import_batch, self.cfg, batch), done, file_key="import")
-
-    def _import_mod_files(self) -> None:
-        paths = filedialog.askopenfilenames(title="Import mods")
-        if paths:
-            self._import_paths([Path(p) for p in paths])
-
-    def _import_mod_folder(self) -> None:
-        path = filedialog.askdirectory(title="Import mod folder")
-        if path:
-            self._import_paths([Path(path)])
-
-    def _set_mod_image(self) -> None:
-        if self.busy or not ensure_paths(self.cfg):
-            return
-        indexes = self._selected_indexes(self.mods_tree)
-        default_name = ""
-        if indexes and 1 <= indexes[0] <= len(self.current_mods_shown):
-            default_name = self.current_mods_shown[indexes[0] - 1].name
-        mod_name = self._choose_mod_for_image(default_name)
-        if not mod_name:
-            return
-        path = filedialog.askopenfilename(title="Select image")
-        if not path:
-            return
-        image = Path(path)
-        if not is_image_file(image):
-            messagebox.showwarning("Image", "Unsupported image file.")
-            return
-
-        def done(result) -> None:
-            ok, msg = result
-            self.placeholder_images.clear()
-            self.status_var.set(f"Image {'saved' if ok else 'skipped'}: {msg}")
-            self.refresh_mods()
-
-        self._run_action("Saving image", partial(import_mod_image, self.cfg, mod_name, image), done, file_key=f"img:{mod_name}")
-
-    def _choose_mod_for_image(self, default_name: str = "") -> str:
-        names = [m.name for m in self.current_mod_items]
-        if not names:
-            messagebox.showwarning("Image", "No mods available.")
-            return ""
-        result = {"name": ""}
-        dialog = tk.Toplevel(self)
-        dialog.title("Select mod")
-        dialog.transient(self)
-        dialog.grab_set()
-        dialog.resizable(False, False)
-        dialog.columnconfigure(0, weight=1)
-        ttk.Label(dialog, text="Mod").grid(row=0, column=0, sticky="w", padx=12, pady=(12, 4))
-        var = tk.StringVar(value=default_name or names[0])
-        box = AutocompleteCombobox(dialog, textvariable=var, width=52)
-        box.set_completion_values(names)
-        box.grid(row=1, column=0, columnspan=2, sticky="ew", padx=12, pady=4)
-
-        def ok() -> None:
-            value = var.get().strip()
-            if value in names:
-                result["name"] = value
-                dialog.destroy()
-            else:
-                messagebox.showwarning("Image", "Select mod from list.", parent=dialog)
-
-        def cancel() -> None:
-            dialog.destroy()
-
-        buttons = ttk.Frame(dialog)
-        buttons.grid(row=2, column=0, columnspan=2, sticky="e", padx=12, pady=(8, 12))
-        ttk.Button(buttons, text="OK", command=ok).pack(side="left", padx=(0, 8))
-        ttk.Button(buttons, text="Cancel", command=cancel).pack(side="left")
-        dialog.bind("<Return>", lambda _event: ok())
-        dialog.bind("<Escape>", lambda _event: cancel())
-        box.focus_set()
-        dialog.wait_window()
-        return result["name"]
-
-    def refresh_all(self) -> None:
-        self.refresh_mods()
-        self.refresh_presets()
-        self.refresh_broken()
-
-    def refresh_mods(self, selected_names: List[str] | None = None) -> None:
-        if not ensure_paths(self.cfg):
-            self.status_var.set("Configure folders first.")
-            return
-        page, label, search, order = self._view_args()
-        items, shown, page, pages, labels = mods_view(self.cfg, page, label, search, order)
-        records = mods_records()
-        self.current_mod_items = items
-        self.current_mods_shown = shown
-        self.current_mod_labels = labels
-        self.current_mod_records = records
-        self.mod_page.set(page)
-        row_height = max(30, int(34 * self._ui_scale()))
-        row_height = max(row_height, max(28, int(self._image_width() * 0.65)) + 6)
-        ttk.Style(self).configure("Mods.Treeview", rowheight=row_height)
-        self.mods_tree.delete(*self.mods_tree.get_children())
-        if selected_names:
-            selected = [str(i) for i, mod in enumerate(shown, 1) if mod.name in selected_names]
-            if selected:
-                self.list_selected_index = max(0, int(selected[0]) - 1)
-                self.tile_selected_index = max(0, int(selected[0]) - 1)
-                self.tile_selected_indices = {int(i) - 1 for i in selected}
-            else:
-                self.tile_selected_indices = {self.tile_selected_index} if shown else set()
-        elif shown and not self.mods_tree.selection():
-            self.list_selected_index = min(self.list_selected_index, len(shown) - 1)
-            self.tile_selected_index = min(self.tile_selected_index, len(shown) - 1)
-            self.tile_selected_indices = {self.tile_selected_index}
-        else:
-            self.tile_selected_indices = {self.tile_selected_index} if shown else set()
-        if self.list_selected_index < self.list_render_offset or self.list_selected_index >= self.list_render_offset + self._list_visible_rows():
-            self.list_render_offset = max(0, min(self.list_selected_index, max(0, len(shown) - self._list_visible_rows())))
-        self.search_box.set_completion_values([m.name for m in items])
-        label_values = sorted({v for v in labels.values() if v})
-        self.label_filter_box.set_completion_values(label_values)
-        self.label_edit_box.set_completion_values(label_values)
-        self._refresh_mod_list()
-        if self._is_tile_view():
-            self._refresh_mod_tiles(rebuild=True)
-        self.status_var.set(f"Mods page {page}/{pages}. Items: {len(items)}")
-        self._on_mod_selection_changed()
-
-    def refresh_presets(self) -> None:
-        if not ensure_paths(self.cfg):
-            return
-        presets, keys, page_keys, page, pages = presets_view(self.cfg, max(1, int(self.preset_page.get() or 1)), self._preset_order_mode())
-        records = presets_records()
-        installed_set = {m.name for m in list_installed_mods(self.cfg)}
-        self.preset_page.set(page)
-        self.presets_tree.delete(*self.presets_tree.get_children())
-        for i, name in enumerate(page_keys, 1):
-            mods = presets.get(name, [])
-            rec = records.get(name, {})
-            state = rec.get("state") or "undefined"
-            last_managed = rec.get("last_managed") or "-"
-            all_applied = bool(mods) and all(nm in installed_set for nm in mods)
-            tags = ("applied",) if all_applied else ()
-            self.presets_tree.insert("", "end", iid=str(i), text=name, values=(state, len(mods), last_managed), tags=tags)
-        self.preset_name_box.set_completion_values(keys)
-        self.status_var.set(f"Presets page {page}/{pages}. Items: {len(keys)}")
-
-    def refresh_broken(self) -> None:
-        if not ensure_paths(self.cfg):
-            return
-        broken = list_broken_links(self.cfg)
-        self.current_broken = broken
-        self.broken_tree.delete(*self.broken_tree.get_children())
-        for i, mod in enumerate(broken, 1):
-            kind = "DIR" if mod.is_dir else "FILE"
-            self.broken_tree.insert("", "end", iid=str(i), text=mod.name, values=(kind, str(mod.src)))
-        self.status_var.set(f"Broken links: {len(broken)}")
-
-    def _selected_indexes(self, tree: ttk.Treeview) -> List[int]:
-        if tree is getattr(self, "mods_tree", None) and self._is_tile_view():
-            total = len(self.current_mods_shown)
-            return sorted(i + 1 for i in self.tile_selected_indices if 0 <= i < total)
-        return [int(iid) for iid in tree.selection() if str(iid).isdigit()]
-
-    def _mods_search(self) -> None:
-        self.mod_page.set(1)
-        self.refresh_mods()
-
-    def _mods_clear(self) -> None:
-        self.search_var.set("")
-        self.label_filter_var.set("")
-        self.mod_page.set(1)
-        self.refresh_mods()
-
-    def _change_mod_page(self, delta: int) -> None:
-        self.mod_page.set(max(1, int(self.mod_page.get() or 1) + delta))
-        self.refresh_mods()
-
-    def _change_preset_page(self, delta: int) -> None:
-        self.preset_page.set(max(1, int(self.preset_page.get() or 1) + delta))
-        self.refresh_presets()
-
-    def _install_page(self) -> None:
-        page, label, search, order = self._view_args()
-
-        def done(result) -> None:
-            page, total, err = result
-            self.status_var.set(f"Installed {total - err}/{total} on page {page}. Errors: {err}.")
-            self.refresh_mods()
-            self.refresh_presets()
-
-        self._run_action("Installing page", partial(apply_mods_page, self.cfg, page, label, search, order), done, file_key="page")
-
-    def _uninstall_page(self) -> None:
-        page, label, search, order = self._view_args()
-
-        def done(result) -> None:
-            page, count = result
-            self.status_var.set(f"Uninstalled {count} on page {page}.")
-            self.refresh_mods()
-            self.refresh_presets()
-
-        self._run_action("Uninstalling page", partial(deactivate_mods_page, self.cfg, page, label, search, order), done, file_key="page")
-
-    def _toggle_selected_mods(self) -> None:
-        shown = list(self.current_mods_shown)
-        indexes = self._selected_indexes(self.mods_tree)
-        selected_names = [shown[i - 1].name for i in indexes if 1 <= i <= len(shown)]
-
-        def done(msg) -> None:
-            self.status_var.set(msg or "No mods selected.")
-            self.refresh_mods(selected_names)
-            self.refresh_presets()
-
-        self._run_action("Toggling selected mods", partial(toggle_mods_by_indexes, shown, indexes), done, file_key="mods")
-
-    def _add_label_selected(self) -> None:
-        label = self.label_edit_var.get().strip()
-        if not label:
-            messagebox.showerror("Label", "Enter label.")
-            return
-        targets = [self.current_mods_shown[i - 1].name for i in self._selected_indexes(self.mods_tree) if 1 <= i <= len(self.current_mods_shown)]
-
-        def done(msg) -> None:
-            self.status_var.set(msg)
-            self.refresh_mods()
-
-        if not targets:
-            self.status_var.set("No mods selected.")
-            return
-        self._run_action("Adding label", partial(add_label_to_mods, label, targets), done, file_key="labels")
-
-    def _remove_label_selected(self) -> None:
-        label = self.label_edit_var.get().strip()
-        if not label:
-            messagebox.showerror("Label", "Enter label.")
-            return
-        targets = [self.current_mods_shown[i - 1].name for i in self._selected_indexes(self.mods_tree) if 1 <= i <= len(self.current_mods_shown)]
-
-        def done(msg) -> None:
-            self.status_var.set(msg)
-            self.refresh_mods()
-
-        if not targets:
-            self.status_var.set("No mods selected.")
-            return
-        self._run_action("Removing label", partial(remove_label_from_mods, label, targets), done, file_key="labels")
-
-    def _save_preset(self) -> None:
-        name = self.preset_name_box.get().strip()
-        if not name:
-            messagebox.showerror("Preset", "Enter preset name.")
-            return
-
-        def done(result) -> None:
-            _ok, msg = result
-            self.status_var.set(msg)
-            self.refresh_presets()
-
-        self._run_action("Saving preset", partial(save_preset_from_installed, self.cfg, name), done, file_key="presets")
-
-    def _toggle_selected_presets(self) -> None:
-        if not self.search_var.get().strip() and not self.label_filter_var.get().strip() and self.current_mod_items:
-            installed = {m.name for m in self.current_mod_items if m.installed}
-        else:
-            installed = {m.name for m in mods_view(self.cfg, 1, "", "", "d")[0] if m.installed}
-        page = int(self.preset_page.get() or 1)
-        indexes = self._selected_indexes(self.presets_tree)
-
-        def done(result) -> None:
-            msg, messages, has_errors = result
-            self.status_var.set(msg or "No presets selected.")
-            if has_errors:
-                messagebox.showwarning("Preset", "\n".join(messages))
-            self.refresh_mods()
-            self.refresh_presets()
-
-        self._run_action("Toggling selected presets", partial(toggle_presets_by_indexes, self.cfg, page, indexes, installed), done, file_key="presets")
-
-    def _delete_selected_presets(self) -> None:
-        page = int(self.preset_page.get() or 1)
-        indexes = self._selected_indexes(self.presets_tree)
-
-        def done(result) -> None:
-            count, missing = result
-            self.status_var.set(f"Deleted: {count}. Missing: {', '.join(missing) if missing else 'none'}")
-            self.refresh_presets()
-
-        self._run_action("Deleting presets", partial(delete_presets_by_indexes, self.cfg, page, indexes), done, file_key="presets")
-
-    def _browse_setting(self, key: str) -> None:
-        path = filedialog.askdirectory()
-        if path:
-            self.setting_vars[key].set(path)
-
-    def _save_settings(self) -> None:
-        values = {key: var.get().strip() for key, var in self.setting_vars.items()}
-
-        def done(new_cfg) -> None:
-            self.cfg.clear()
-            self.cfg.update(new_cfg)
-            self.mod_view_mode.set(self.cfg.get("mod_view_mode", "list"))
-            self._rebuild_tabs()
-            w = max(880, int(self.cfg.get("window_width", 1200)))
-            h = max(560, int(self.cfg.get("window_height", 750)))
-            self.geometry(f"{w}x{h}")
-            self.status_var.set("Settings saved.")
+            if size is not None:
+                self._target_size = size
+            target_width = self._target_size.width() if self._target_size.width() > 1 else self.width()
+            if target_width <= 1 and self.parentWidget():
+                target_width = self.parentWidget().width()
+            target_height = self._target_size.height() if self._target_size.height() > 1 else self._source_pixmap.height()
+            target_width = max(1, target_width)
+            target_height = max(1, target_height)
+            scaled = self._source_pixmap.scaled(target_width, target_height, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
+            self.setPixmap(scaled)
+            self.setFixedHeight(scaled.height())
+
+
+    class ModManagerGui(QtWidgets.QMainWindow):
+        def __init__(self):
+            super().__init__()
+            self.setWindowTitle("Mod Manager")
+            self.cfg = load_config()
+            self.resize(max(880, int(self.cfg.get("window_width", 1200))), max(560, int(self.cfg.get("window_height", 750))))
+            self.setMinimumSize(880, 560)
+            self.setAcceptDrops(True)
+
+            self.mod_page = _Var(1)
+            self.preset_page = _Var(1)
+            self.search_var = _Var("")
+            self.label_filter_var = _Var("")
+            self.label_edit_var = _Var("")
+            self.order_var = _Var(self.cfg.get("order_var", "Default"))
+            self.mod_view_mode = _Var(self.cfg.get("mod_view_mode", "list"))
+            self.status_var = _Var("")
+            self.setting_vars: dict[str, _Var] = {}
+
+            self.current_mod_items: list[ModItem] = []
+            self.current_mods_shown: list[ModItem] = []
+            self.current_mod_labels: dict[str, str] = {}
+            self.current_mod_records: dict[str, dict] = {}
+            self.current_broken: list[ModItem] = []
+            self.busy = False
+            self.action_widgets: list[QtWidgets.QWidget] = []
+            self.mod_selection_widgets: list[QtWidgets.QWidget] = []
+            self.mod_sort_key = self.cfg.get("mod_sort_key", "d")
+            self.mod_sort_reverse = bool(self.cfg.get("mod_sort_reverse", False))
+            self.preset_sort_key = self.cfg.get("preset_sort_key", "name")
+            self.preset_sort_reverse = bool(self.cfg.get("preset_sort_reverse", False))
+            self._pool = WorkerPool()
+            self._poll_timer = QtCore.QTimer(self)
+            self._poll_timer.timeout.connect(self._poll_workers)
+
+            self._build()
+            self._bind_navigation_events()
             self.refresh_all()
 
-        self._run_action("Saving settings", partial(_run_save_settings, self.cfg, values), done, file_key="config")
+        def closeEvent(self, event) -> None:
+            self.cfg["window_width"] = self.width()
+            self.cfg["window_height"] = self.height()
+            self._save_tile_splitter_sizes()
+            save_config(self.cfg)
+            self._pool.shutdown()
+            super().closeEvent(event)
 
-    def _open_folder(self, target: str) -> None:
-        key = "mods_source_dir" if target == "source" else "game_mods_dir"
+        def eventFilter(self, obj, event):
+            if self._is_mod_drop_target(obj):
+                if event.type() in (QtCore.QEvent.DragEnter, QtCore.QEvent.DragMove) and event.mimeData().hasUrls():
+                    event.acceptProposedAction()
+                    return True
+                if event.type() == QtCore.QEvent.Drop:
+                    paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
+                    if paths:
+                        self._handle_mods_drop(paths, target_mod_name=self._mod_name_at_view_position(obj, event.position().toPoint()))
+                        event.acceptProposedAction()
+                        return True
+            if event.type() == QtCore.QEvent.MouseButtonPress:
+                if event.button() == QtCore.Qt.XButton1:
+                    return self._nav_back() == "break"
+                if event.button() == QtCore.Qt.XButton2:
+                    return self._nav_forward() == "break"
+            detail_scroll = getattr(self, "detail_scroll", None)
+            if detail_scroll and obj is detail_scroll.viewport() and event.type() == QtCore.QEvent.Resize:
+                self._update_detail_image_size()
+            return super().eventFilter(obj, event)
 
-        def done(result) -> None:
-            ok, msg = result
-            self.status_var.set(f"Open {target} folder: {'OK' if ok else 'ERR'} - {msg}")
+        def _bind_navigation_events(self) -> None:
+            QtWidgets.QApplication.instance().installEventFilter(self)
+            QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Backspace), self, activated=self._nav_back)
+            QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Back), self, activated=self._nav_back)
+            QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Forward), self, activated=self._nav_forward)
+            QtGui.QShortcut(QtGui.QKeySequence("Ctrl++"), self, activated=lambda: self._zoom_tiles(1))
+            QtGui.QShortcut(QtGui.QKeySequence("Ctrl+="), self, activated=lambda: self._zoom_tiles(1))
+            QtGui.QShortcut(QtGui.QKeySequence("Ctrl+-"), self, activated=lambda: self._zoom_tiles(-1))
+            QtGui.QShortcut(QtGui.QKeySequence.Paste, self, activated=self._handle_paste)
 
-        self._run_action(f"Opening {target} folder", partial(open_folder, self.cfg.get(key, "")), done, file_key="open")
+        def _is_mods_tab_active(self) -> bool:
+            return self.isActiveWindow()
 
-    def _remove_selected_broken(self) -> None:
-        targets = [self.current_broken[i - 1] for i in self._selected_indexes(self.broken_tree) if 1 <= i <= len(self.current_broken)]
+        def _is_tile_view(self) -> bool:
+            return self.mod_view_mode.get() == "tiles"
 
-        def done(count) -> None:
-            self.status_var.set(f"Removed broken links: {count}")
+        def _nav_back(self, event=None):
+            if self._is_mods_tab_active():
+                self._change_mod_page(-1)
+                return "break"
+            return None
+
+        def _nav_forward(self, event=None):
+            if self._is_mods_tab_active():
+                self._change_mod_page(1)
+                return "break"
+            return None
+
+        def _build(self) -> None:
+            self.mods_tab = QtWidgets.QWidget()
+            self.setCentralWidget(self.mods_tab)
+            self.statusBar().showMessage("")
+            self._build_menu()
+            self._build_mods()
+            self._build_presets()
+            self._build_settings()
+            self._build_broken()
+
+        def _build_menu(self) -> None:
+            manage = self.menuBar().addMenu("Manage")
+            presets = manage.addAction(self._icon("save"), "Presets")
+            presets.setToolTip("Open presets")
+            presets.triggered.connect(self._open_presets_dialog)
+            settings = manage.addAction(self._icon("open"), "Settings")
+            settings.setToolTip("Open settings")
+            settings.triggered.connect(self._open_settings_dialog)
+            broken = manage.addAction(self._icon("delete"), "Broken links")
+            broken.setToolTip("Open broken links cleanup")
+            broken.triggered.connect(self._open_broken_dialog)
+
+        def _dialog(self, title: str, width: int = 760, height: int = 520) -> QtWidgets.QDialog:
+            dialog = QtWidgets.QDialog(self)
+            dialog.setWindowTitle(title)
+            dialog.resize(width, height)
+            return dialog
+
+        def _show_dialog(self, dialog: QtWidgets.QDialog) -> None:
+            dialog.show()
+            dialog.raise_()
+            dialog.activateWindow()
+
+        def _close_dialog(self, dialog: QtWidgets.QDialog | None) -> None:
+            if dialog and dialog.isVisible():
+                dialog.accept()
+
+        def _open_presets_dialog(self) -> None:
+            self.refresh_presets()
+            self._show_dialog(self.presets_dialog)
+
+        def _open_settings_dialog(self) -> None:
+            self._show_dialog(self.settings_dialog)
+
+        def _open_broken_dialog(self) -> None:
+            self.refresh_broken()
+            self._show_dialog(self.broken_dialog)
+
+        def _button(self, text: str, command: Callable, tooltip: str = ""):
+            button = QtWidgets.QPushButton(text)
+            button.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+            button.clicked.connect(command)
+            if tooltip:
+                button.setToolTip(tooltip)
+            self.action_widgets.append(button)
+            return button
+
+        def _icon(self, name: str) -> QtGui.QIcon:
+            style = self.style()
+            icons = {
+                "add": QtWidgets.QStyle.SP_DialogApplyButton,
+                "back": QtWidgets.QStyle.SP_ArrowBack,
+                "clear": QtWidgets.QStyle.SP_DialogResetButton,
+                "delete": QtWidgets.QStyle.SP_TrashIcon,
+                "folder": QtWidgets.QStyle.SP_DirOpenIcon,
+                "forward": QtWidgets.QStyle.SP_ArrowForward,
+                "image": QtWidgets.QStyle.SP_FileIcon,
+                "import": QtWidgets.QStyle.SP_FileDialogNewFolder,
+                "install": QtWidgets.QStyle.SP_DialogApplyButton,
+                "list": QtWidgets.QStyle.SP_FileDialogDetailedView,
+                "menu": QtWidgets.QStyle.SP_TitleBarMenuButton,
+                "open": QtWidgets.QStyle.SP_DirIcon,
+                "remove": QtWidgets.QStyle.SP_DialogCancelButton,
+                "save": QtWidgets.QStyle.SP_DialogSaveButton,
+                "search": QtWidgets.QStyle.SP_FileDialogContentsView,
+                "toggle": QtWidgets.QStyle.SP_BrowserReload,
+                "uninstall": QtWidgets.QStyle.SP_DialogDiscardButton,
+            }
+            return style.standardIcon(icons.get(name, QtWidgets.QStyle.SP_FileIcon))
+
+        def _icon_button(self, text: str, command: Callable, tooltip: str, icon: str, icon_only: bool = True):
+            button = QtWidgets.QPushButton("" if icon_only else text)
+            button.setIcon(self._icon(icon))
+            button.setIconSize(QtCore.QSize(18, 18))
+            button.setAccessibleName(text)
+            button.setToolTip(tooltip or text)
+            button.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+            if icon_only:
+                button.setFixedSize(32, 32)
+            button.clicked.connect(command)
+            self.action_widgets.append(button)
+            return button
+
+        def _mod_selection_button(self, text: str, command: Callable, tooltip: str = "", icon: str = "toggle"):
+            button = self._icon_button(text, command, tooltip or text, icon)
+            button.setEnabled(False)
+            self.mod_selection_widgets.append(button)
+            return button
+
+        def _set_icon_button_checked(self, button: QtWidgets.QPushButton, checked: bool) -> None:
+            button.setCheckable(True)
+            button.setChecked(checked)
+
+        def _build_mods(self) -> None:
+            layout = QtWidgets.QVBoxLayout(self.mods_tab)
+            top = QtWidgets.QHBoxLayout()
+            self.search_box = QtWidgets.QComboBox()
+            self.search_box.setEditable(True)
+            self.search_box.lineEdit().setPlaceholderText("Search")
+            self.search_box.lineEdit().returnPressed.connect(self._mods_search)
+            self.label_filter_box = QtWidgets.QComboBox()
+            self.label_filter_box.setEditable(True)
+            self.label_filter_box.lineEdit().setPlaceholderText("Label")
+            self.label_filter_box.lineEdit().returnPressed.connect(self._mods_search)
+            self.view_list_button = self._icon_button("List view", lambda: self._set_view_mode("list"), "Show mods as a list", "list")
+            self.view_tiles_button = self._icon_button("Tile view", lambda: self._set_view_mode("tiles"), "Show mods as tiles", "image")
+            self._set_icon_button_checked(self.view_list_button, self.mod_view_mode.get() != "tiles")
+            self._set_icon_button_checked(self.view_tiles_button, self.mod_view_mode.get() == "tiles")
+            self.manage_menu = QtWidgets.QMenu(self)
+            self.presets_menu_action = self.manage_menu.addAction(self._icon("save"), "Presets")
+            self.presets_menu_action.triggered.connect(self._open_presets_dialog)
+            self.settings_menu_action = self.manage_menu.addAction(self._icon("open"), "Settings")
+            self.settings_menu_action.triggered.connect(self._open_settings_dialog)
+            self.broken_menu_action = self.manage_menu.addAction(self._icon("delete"), "Broken links")
+            self.broken_menu_action.triggered.connect(self._open_broken_dialog)
+            self.manage_button = self._icon_button("Menu", lambda: None, "Open application menu", "menu", icon_only=False)
+            self.manage_button.setText("Menu")
+            self.manage_button.setMenu(self.manage_menu)
+            self.order_box = QtWidgets.QComboBox()
+            self.order_box.addItems(["Default", "Created date"])
+            self.order_box.setCurrentText(self.order_var.get() if self.order_var.get() in {"Default", "Created date"} else "Default")
+            self.order_box.currentTextChanged.connect(self._set_mod_order)
+            top.addWidget(self.search_box, 2)
+            top.addWidget(self.label_filter_box, 1)
+            top.addWidget(self._icon_button("Search", self._mods_search, "Apply search and label filters", "search"))
+            top.addWidget(self._icon_button("Clear", self._mods_clear, "Clear search and label filters", "clear"))
+            top.addWidget(QtWidgets.QLabel("Order"))
+            top.addWidget(self.order_box)
+            top.addWidget(QtWidgets.QLabel("View"))
+            top.addWidget(self.view_list_button)
+            top.addWidget(self.view_tiles_button)
+            top.addWidget(self.manage_button)
+            layout.addLayout(top)
+
+            self.mods_model = ModTableModel(self)
+            self.mods_stack = QtWidgets.QStackedWidget()
+            self.mods_table = QtWidgets.QTableView()
+            self.mods_table.setModel(self.mods_model)
+            self.mods_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+            self.mods_table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+            self.mods_table.setAcceptDrops(True)
+            self.mods_table.viewport().setAcceptDrops(True)
+            self.mods_table.viewport().installEventFilter(self)
+            mods_header = self.mods_table.horizontalHeader()
+            mods_header.setStretchLastSection(False)
+            mods_header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+            mods_header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
+            mods_header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
+            self.mods_table.verticalHeader().setVisible(False)
+            self.mods_table.doubleClicked.connect(lambda _idx: self._toggle_selected_mods())
+            self.mods_table.selectionModel().selectionChanged.connect(lambda _a, _b: self._on_mod_selection_changed())
+
+            self.tile_delegate = TileDelegate(self.cfg, self)
+            self.tiles_view = ModListView()
+            self.tiles_view.setModel(self.mods_model)
+            self.tiles_view.setItemDelegate(self.tile_delegate)
+            self.tiles_view.setViewMode(QtWidgets.QListView.IconMode)
+            self.tiles_view.setResizeMode(QtWidgets.QListView.Adjust)
+            self.tiles_view.setMovement(QtWidgets.QListView.Static)
+            self.tiles_view.setUniformItemSizes(True)
+            self.tiles_view.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+            self.tiles_view.setAcceptDrops(True)
+            self.tiles_view.viewport().setAcceptDrops(True)
+            self.tiles_view.viewport().installEventFilter(self)
+            self.tiles_view.zoomRequested.connect(self._zoom_tiles)
+            self.tiles_view.doubleClicked.connect(lambda _idx: self._toggle_selected_mods())
+            self.tiles_view.selectionModel().selectionChanged.connect(lambda _a, _b: self._on_mod_selection_changed())
+
+            self.detail_frame = QtWidgets.QWidget()
+            self.detail_frame.setAutoFillBackground(True)
+            self.detail_frame.setStyleSheet("background: palette(base);")
+            self.detail_layout = QtWidgets.QVBoxLayout(self.detail_frame)
+            self.detail_layout.setContentsMargins(12, 12, 12, 12)
+            self.detail_layout.setSpacing(8)
+            self.detail_layout.setAlignment(QtCore.Qt.AlignTop)
+            self.detail_scroll = QtWidgets.QScrollArea()
+            self.detail_scroll.setWidgetResizable(True)
+            self.detail_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+            self.detail_scroll.setWidget(self.detail_frame)
+            self.detail_scroll.viewport().installEventFilter(self)
+            self.tile_splitter = QtWidgets.QSplitter()
+            self.tile_splitter.addWidget(self.tiles_view)
+            self.tile_splitter.addWidget(self.detail_scroll)
+            self.tile_splitter.setStretchFactor(0, 3)
+            self.tile_splitter.setStretchFactor(1, 2)
+            self.tile_splitter.splitterMoved.connect(lambda _pos, _index: self._save_tile_splitter_sizes())
+            QtCore.QTimer.singleShot(0, self._restore_tile_splitter_sizes)
+
+            self.mods_stack.addWidget(self.mods_table)
+            self.mods_stack.addWidget(self.tile_splitter)
+            layout.addWidget(self.mods_stack, 1)
+
+            actions = QtWidgets.QHBoxLayout()
+            actions.addWidget(self._icon_button("Previous page", lambda: self._change_mod_page(-1), "Previous mods page", "back"))
+            actions.addWidget(self._icon_button("Next page", lambda: self._change_mod_page(1), "Next mods page", "forward"))
+            self.page_label = QtWidgets.QLabel("Page 1/1")
+            actions.addWidget(self.page_label)
+            actions.addStretch(1)
+            actions.addWidget(self._icon_button(_sys_str("install"), self._install_page, "Install all mods on the current page", "install"))
+            actions.addWidget(self._icon_button(_sys_str("uninstall"), self._uninstall_page, "Uninstall all mods on the current page", "uninstall"))
+            actions.addWidget(self._mod_selection_button("Toggle", self._toggle_selected_mods, "Toggle selected mods", "toggle"))
+            self.label_edit = QtWidgets.QLineEdit()
+            self.label_edit.setPlaceholderText("Label")
+            self.label_edit.setMaximumWidth(160)
+            self.label_edit.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+            actions.addWidget(self.label_edit)
+            actions.addWidget(self._mod_selection_button("Add label", self._add_label_selected, "Add label to selected mods", "add"))
+            actions.addWidget(self._mod_selection_button("Remove label", self._remove_label_selected, "Remove label from selected mods", "remove"))
+            actions.addWidget(self._icon_button("Import files", self._import_mod_files, "Import mod files", "import"))
+            actions.addWidget(self._icon_button("Import folder", self._import_mod_folder, "Import a mod folder", "folder"))
+            actions.addWidget(self._mod_selection_button("Set image", self._set_mod_image, "Set preview image for selected mod", "image"))
+            layout.addLayout(actions)
+            self._show_mod_view()
+
+        def _save_tile_splitter_sizes(self) -> None:
+            if not hasattr(self, "tile_splitter"):
+                return
+            sizes = self.tile_splitter.sizes()
+            if len(sizes) >= 2 and sizes[0] > 0 and sizes[1] > 0:
+                self.cfg["_tile_list_width"] = int(sizes[0])
+                self.cfg["_tile_detail_width"] = int(sizes[1])
+
+        def _restore_tile_splitter_sizes(self) -> None:
+            if not hasattr(self, "tile_splitter"):
+                return
+            list_w = int(self.cfg.get("_tile_list_width") or 0)
+            detail_w = int(self.cfg.get("_tile_detail_width") or 0)
+            if list_w > 0 and detail_w > 0:
+                self.tile_splitter.setSizes([list_w, detail_w])
+
+        def _build_presets(self) -> None:
+            self.presets_dialog = self._dialog("Presets")
+            layout = QtWidgets.QVBoxLayout(self.presets_dialog)
+            self.presets_model = PresetTableModel(self)
+            self.presets_table = QtWidgets.QTableView()
+            self.presets_table.setModel(self.presets_model)
+            self.presets_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+            self.presets_table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+            self.presets_table.horizontalHeader().setStretchLastSection(True)
+            self.presets_table.verticalHeader().setVisible(False)
+            self.presets_table.doubleClicked.connect(self._toggle_preset_at_index)
+            layout.addWidget(self.presets_table)
+            actions = QtWidgets.QHBoxLayout()
+            self.preset_name = QtWidgets.QLineEdit()
+            self.preset_name.setPlaceholderText("Preset name")
+            actions.addWidget(self._icon_button("Previous page", lambda: self._change_preset_page(-1), "Previous presets page", "back"))
+            actions.addWidget(self._icon_button("Next page", lambda: self._change_preset_page(1), "Next presets page", "forward"))
+            self.preset_page_label = QtWidgets.QLabel("Page 1/1")
+            actions.addWidget(self.preset_page_label)
+            actions.addStretch(1)
+            actions.addWidget(self.preset_name)
+            actions.addWidget(self._icon_button("Save", self._save_preset, "Save current installed mods as preset", "save"))
+            actions.addWidget(self._icon_button("Toggle", self._toggle_selected_presets, "Toggle selected presets", "toggle"))
+            actions.addWidget(self._icon_button("Delete", self._delete_selected_presets, "Delete selected presets", "delete"))
+            layout.addLayout(actions)
+
+        def _build_settings(self) -> None:
+            self.settings_dialog = self._dialog("Settings", 820, 560)
+            scroll = QtWidgets.QScrollArea()
+            scroll.setWidgetResizable(True)
+            wrapper = QtWidgets.QWidget()
+            wrapper_layout = QtWidgets.QVBoxLayout(wrapper)
+            wrapper_layout.setAlignment(QtCore.Qt.AlignTop)
+            host = QtWidgets.QWidget()
+            form = QtWidgets.QFormLayout(host)
+            form.setFieldGrowthPolicy(QtWidgets.QFormLayout.AllNonFixedFieldsGrow)
+            keys = [
+                "game_mods_dir",
+                "mods_source_dir",
+                "mod_extensions",
+                "link_prefix",
+                "page_size",
+                "max_mod_name_len",
+                "max_preset_name_len",
+                "max_label_name_len",
+                "gui_font_family",
+                "gui_font_size",
+                "ui_scale_percent",
+                "placeholder_image_col_width",
+                "mod_view_mode",
+                "tile_size",
+            ]
+            self.setting_widgets: dict[str, QtWidgets.QWidget] = {}
+            for key in keys:
+                value = self.cfg.get(key, "")
+                self.setting_vars[key] = _Var(str(value))
+                if key == "mod_view_mode":
+                    widget = QtWidgets.QComboBox()
+                    widget.addItems(["list", "tiles"])
+                    widget.setCurrentText(str(value or "list"))
+                elif key == "gui_font_family":
+                    widget = QtWidgets.QComboBox()
+                    widget.addItem("")
+                    widget.addItems(self._system_font_families())
+                    if value and widget.findText(str(value)) < 0:
+                        widget.addItem(str(value))
+                    widget.setCurrentText(str(value or ""))
+                else:
+                    widget = QtWidgets.QLineEdit(str(value))
+                widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+                self.setting_widgets[key] = widget
+                row = QtWidgets.QHBoxLayout()
+                row.addWidget(widget, 1)
+                if key in {"game_mods_dir", "mods_source_dir"}:
+                    row.addWidget(self._icon_button("Browse", lambda _checked=False, k=key: self._browse_setting(k), f"Browse for {key}", "folder"))
+                form.addRow(key, row)
+            form.addRow(self._icon_button("Save settings", self._save_settings, "Save settings", "save", icon_only=False))
+            wrapper_layout.addWidget(host)
+            wrapper_layout.addStretch(1)
+            scroll.setWidget(wrapper)
+            layout = QtWidgets.QVBoxLayout(self.settings_dialog)
+            layout.addWidget(scroll)
+
+        def _system_font_families(self) -> list[str]:
+            try:
+                families = QtGui.QFontDatabase.families()
+            except TypeError:
+                families = QtGui.QFontDatabase().families()
+            return sorted({str(family) for family in families if family}, key=str.lower)
+
+        def _build_broken(self) -> None:
+            self.broken_dialog = self._dialog("Broken links", 760, 520)
+            layout = QtWidgets.QVBoxLayout(self.broken_dialog)
+            self.broken_model = BrokenTableModel(self)
+            self.broken_table = QtWidgets.QTableView()
+            self.broken_table.setModel(self.broken_model)
+            self.broken_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+            self.broken_table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+            self.broken_table.horizontalHeader().setStretchLastSection(True)
+            self.broken_table.verticalHeader().setVisible(False)
+            layout.addWidget(self.broken_table)
+            actions = QtWidgets.QHBoxLayout()
+            actions.addStretch(1)
+            actions.addWidget(self._icon_button("Remove selected", self._remove_selected_broken, "Remove selected broken links", "remove", icon_only=False))
+            actions.addWidget(self._icon_button("Remove all", self._remove_all_broken, "Remove all broken links", "delete", icon_only=False))
+            layout.addLayout(actions)
+
+        def _set_busy(self, busy: bool, text: str = "") -> None:
+            self.busy = busy
+            for widget in self.action_widgets:
+                widget.setEnabled(not busy)
+            self._update_mod_selection_actions()
+            if text:
+                self.status_var.set(text)
+                self.statusBar().showMessage(text)
+
+        def _run_action(self, label: str, worker: Callable, done: Callable | None = None, file_key: str = "global") -> None:
+            self._set_busy(True, label)
+
+            def callback(result, error):
+                self._set_busy(False)
+                if error:
+                    QtWidgets.QMessageBox.critical(self, "Error", str(error))
+                    return
+                if done:
+                    done(result)
+
+            self._pool.submit(file_key, worker, callback=callback)
+            self._poll_timer.start(50)
+
+        def _poll_workers(self) -> None:
+            polled = self._pool.poll()
+            self._pool.fire_callbacks(polled)
+            if not self._pool.has_work():
+                self._poll_timer.stop()
+
+        def _view_args(self):
+            return self.mod_page.get(), self.label_filter_var.get(), self.search_var.get(), self._mod_order_mode()
+
+        def _mod_order_mode(self) -> str:
+            order = self.order_var.get()
+            if order == "Created date":
+                return "cd"
+            key = self.mod_sort_key or "d"
+            return f"-{key}" if self.mod_sort_reverse and key != "d" else key
+
+        def _preset_order_mode(self) -> str:
+            key = self.preset_sort_key or "name"
+            return f"-{key}" if self.preset_sort_reverse else key
+
+        def _set_view_mode(self, mode: str) -> None:
+            mode = mode if mode in {"list", "tiles"} else "list"
+            self.mod_view_mode.set(mode)
+            self.cfg["mod_view_mode"] = mode
+            save_config(self.cfg)
+            self._show_mod_view()
+
+        def _set_mod_order(self, text: str) -> None:
+            text = text if text in {"Default", "Created date"} else "Default"
+            self.order_var.set(text)
+            self.cfg["order_var"] = text
+            self.mod_page.set(1)
+            save_config(self.cfg)
+            self.refresh_mods()
+
+        def _on_mod_view_mode_changed(self) -> None:
+            self._set_view_mode(self.mod_view_mode.get())
+
+        def _show_mod_view(self) -> None:
+            is_tiles = self._is_tile_view()
+            self.mods_stack.setCurrentWidget(self.tile_splitter if is_tiles else self.mods_table)
+            self.view_list_button.setChecked(not is_tiles)
+            self.view_tiles_button.setChecked(is_tiles)
+            self._refresh_selected_detail()
+
+        def _sort_mods(self, key: str) -> None:
+            if self.mod_sort_key == key:
+                self.mod_sort_reverse = not self.mod_sort_reverse
+            else:
+                self.mod_sort_key = key
+                self.mod_sort_reverse = False
+            self.cfg["mod_sort_key"] = self.mod_sort_key
+            self.cfg["mod_sort_reverse"] = self.mod_sort_reverse
+            self.mod_page.set(1)
+            save_config(self.cfg)
+            self.refresh_mods()
+
+        def _sort_presets(self, key: str) -> None:
+            if self.preset_sort_key == key:
+                self.preset_sort_reverse = not self.preset_sort_reverse
+            else:
+                self.preset_sort_key = key
+                self.preset_sort_reverse = False
+            self.cfg["preset_sort_key"] = self.preset_sort_key
+            self.cfg["preset_sort_reverse"] = self.preset_sort_reverse
+            save_config(self.cfg)
+            self.refresh_presets()
+
+        def _zoom_tiles(self, direction: int):
+            if not self._is_tile_view():
+                return None
+            current = max(96, int(self.cfg.get("tile_size", 140)))
+            self.cfg["tile_size"] = max(96, min(280, current + (12 if direction > 0 else -12)))
+            self.tile_delegate._pixmaps.clear()
+            self.tiles_view.reset()
+            save_config(self.cfg)
+            return "break"
+
+        def _selected_rows(self, view) -> list[int]:
+            if not view or not view.selectionModel():
+                return []
+            selection = view.selectionModel()
+            rows = {idx.row() for idx in selection.selectedRows()}
+            rows.update(idx.row() for idx in selection.selectedIndexes())
+            return sorted(rows)
+
+        def _selected_indexes(self, view=None) -> List[int]:
+            if view is None:
+                view = self.tiles_view if self._is_tile_view() else self.mods_table
+            return [row + 1 for row in self._selected_rows(view)]
+
+        def _has_mod_selection(self) -> bool:
+            return bool(self._selected_rows(self.tiles_view if self._is_tile_view() else self.mods_table))
+
+        def _update_mod_selection_actions(self) -> None:
+            enabled = (not self.busy) and self._has_mod_selection()
+            for widget in self.mod_selection_widgets:
+                widget.setEnabled(enabled)
+
+        def _on_mod_selection_changed(self) -> None:
+            self._update_mod_selection_actions()
+            self._refresh_selected_detail()
+
+        def _select_mod_names(self, selected_names: list[str] | None = None) -> None:
+            names = set(selected_names or [])
+            view = self.tiles_view if self._is_tile_view() else self.mods_table
+            selection = view.selectionModel()
+            if not selection:
+                return
+            selection.clearSelection()
+            rows = [i for i, mod in enumerate(self.current_mods_shown) if mod.name in names]
+            if not rows and self.current_mods_shown:
+                rows = [0]
+            for row in rows:
+                idx = self.mods_model.index(row, 0)
+                selection.select(idx, QtCore.QItemSelectionModel.Select | QtCore.QItemSelectionModel.Rows)
+                view.setCurrentIndex(idx)
+            self._update_mod_selection_actions()
+
+        def _current_mod_view(self):
+            return self.tiles_view if self._is_tile_view() else self.mods_table
+
+        def _is_mod_drop_target(self, obj) -> bool:
+            return hasattr(self, "mods_table") and obj in (self.mods_table.viewport(), self.tiles_view.viewport())
+
+        def _mod_name_at_view_position(self, obj, pos: QtCore.QPoint) -> str:
+            if not hasattr(self, "mods_model"):
+                return ""
+            view = self.tiles_view if obj is self.tiles_view.viewport() else self.mods_table
+            index = view.indexAt(pos)
+            if not index.isValid() or index.row() >= len(self.current_mods_shown):
+                return ""
+            return self.current_mods_shown[index.row()].name
+
+        def _refresh_selected_detail(self) -> None:
+            rows = self._selected_rows(self._current_mod_view())
+            if len(rows) == 1 and rows[0] < len(self.current_mods_shown):
+                self._refresh_mod_detail(self.current_mods_shown[rows[0]])
+            elif len(rows) > 1:
+                self._refresh_multi_detail([self.current_mods_shown[i] for i in rows if i < len(self.current_mods_shown)])
+            else:
+                self._refresh_mod_detail(None)
+
+        def _clear_detail(self) -> None:
+            self._clear_layout(self.detail_layout)
+
+        def _clear_layout(self, layout) -> None:
+            while layout.count():
+                item = layout.takeAt(0)
+                widget = item.widget()
+                if widget:
+                    widget.setParent(None)
+                    widget.deleteLater()
+                child = item.layout()
+                if child:
+                    self._clear_layout(child)
+
+        def _detail_row(self, label: str, value: str) -> None:
+            row = QtWidgets.QHBoxLayout()
+            name = QtWidgets.QLabel(label)
+            name.setMinimumWidth(110)
+            name.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Preferred)
+            value_label = QtWidgets.QLabel(value)
+            value_label.setWordWrap(True)
+            row.addWidget(name)
+            row.addWidget(value_label, 1)
+            self.detail_layout.addLayout(row)
+
+        def _format_mod_created_date(self, mod: ModItem) -> str:
+            record = self.current_mod_records.get(mod.name, {})
+            for key in ("created_date", "created_at", "created"):
+                value = record.get(key)
+                if value:
+                    return str(value)
+            try:
+                return datetime.fromtimestamp(mod.src.stat().st_ctime).strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                return "-"
+
+        def _dates_fit_on_one_row(self, last_managed: str, created: str, available_width: int | None = None) -> bool:
+            if available_width is None:
+                margins = self.detail_layout.contentsMargins()
+                viewport_width = self.detail_scroll.viewport().width()
+                if viewport_width <= 1:
+                    viewport_width = self.detail_scroll.width()
+                available_width = max(1, viewport_width - margins.left() - margins.right())
+            metrics = self.detail_frame.fontMetrics()
+            label_width = 110
+            spacing = 28
+            needed = (
+                label_width
+                + metrics.horizontalAdvance(last_managed)
+                + label_width
+                + metrics.horizontalAdvance(created)
+                + spacing
+            )
+            return available_width >= needed
+
+        def _detail_dates_row(self, mod: ModItem) -> None:
+            last_managed = self.current_mod_records.get(mod.name, {}).get("last_managed") or "-"
+            created = self._format_mod_created_date(mod)
+            if not self._dates_fit_on_one_row(last_managed, created):
+                self._detail_row("Last managed", last_managed)
+                self._detail_row("Created", created)
+                return
+
+            row = QtWidgets.QHBoxLayout()
+            for label, value in (("Last managed", last_managed), ("Created", created)):
+                name = QtWidgets.QLabel(label)
+                name.setMinimumWidth(110)
+                name.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Preferred)
+                value_label = QtWidgets.QLabel(value)
+                value_label.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Preferred)
+                row.addWidget(name)
+                row.addWidget(value_label)
+            row.addStretch(1)
+            self.detail_layout.addLayout(row)
+
+        def _detail_path_row(self, label: str, path: Path) -> None:
+            row = QtWidgets.QHBoxLayout()
+            name = QtWidgets.QLabel(label)
+            name.setMinimumWidth(110)
+            name.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Preferred)
+            button = QtWidgets.QPushButton(str(path))
+            button.setFlat(True)
+            button.setCursor(QtCore.Qt.PointingHandCursor)
+            button.setStyleSheet("text-align: left; padding-left: 0;")
+            button.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+            button.clicked.connect(lambda _checked=False, p=Path(path): select_in_explorer(p))
+            row.addWidget(name)
+            row.addWidget(button, 1)
+            self.detail_layout.addLayout(row)
+
+        def _detail_label_row(self, value: str) -> None:
+            row = QtWidgets.QHBoxLayout()
+            row.addWidget(QtWidgets.QLabel("Label"))
+            button = QtWidgets.QPushButton(value or "-")
+            button.setFlat(False)
+            button.setIcon(self._icon("toggle"))
+            button.setToolTip("Filter mods by this label")
+            button.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+            button.setEnabled(bool(value and value != "-"))
+            button.clicked.connect(lambda: self._toggle_label_filter(value))
+            row.addWidget(button)
+            row.addStretch(1)
+            self.detail_layout.addLayout(row)
+
+        def _detail_state_action_row(self, mod: ModItem) -> None:
+            row = QtWidgets.QHBoxLayout()
+            row.addWidget(QtWidgets.QLabel("Action"))
+            text = _sys_str("uninstall") if mod.installed else _sys_str("install")
+            button = QtWidgets.QPushButton(text)
+            button.setIcon(self._icon("uninstall" if mod.installed else "install"))
+            button.setToolTip(("Uninstall" if mod.installed else "Install") + " this mod")
+            button.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+            index = self.current_mods_shown.index(mod) + 1 if mod in self.current_mods_shown else 1
+            button.clicked.connect(lambda _checked=False, i=index: self._toggle_selected_indexes([i]))
+            row.addWidget(button)
+            row.addStretch(1)
+            self.detail_layout.addLayout(row)
+
+        def _toggle_label_filter(self, label: str) -> None:
+            if not label or label == "-":
+                return
+            current = self.label_filter_var.get()
+            self.label_filter_var.set("" if current.lower() == label.lower() else label)
+            self.label_filter_box.setCurrentText(self.label_filter_var.get())
+            self.mod_page.set(1)
+            self.refresh_mods()
+
+        def _selected_mod_rows_for_state(self, installed: bool) -> list[int]:
+            rows = self._selected_rows(self._current_mod_view())
+            return [row + 1 for row in rows if row < len(self.current_mods_shown) and self.current_mods_shown[row].installed == installed]
+
+        def _toggle_selected_indexes(self, indexes: list[int]) -> None:
+            if not indexes:
+                return
+            names = [self.current_mods_shown[i - 1].name for i in indexes if 1 <= i <= len(self.current_mods_shown)]
+
+            def done(message):
+                self.status_var.set(message)
+                self.statusBar().showMessage(message)
+                self.refresh_mods(names)
+                self.refresh_presets()
+
+            self._run_action("Updating selected mods...", lambda: toggle_mods_by_indexes(self.current_mods_shown, indexes), done)
+
+        def _install_selected_mods(self) -> None:
+            self._toggle_selected_indexes(self._selected_mod_rows_for_state(False))
+
+        def _uninstall_selected_mods(self) -> None:
+            self._toggle_selected_indexes(self._selected_mod_rows_for_state(True))
+
+        def _refresh_multi_detail(self, mods: list) -> None:
+            self._clear_detail()
+            installed = sum(1 for mod in mods if mod.installed)
+            not_installed = len(mods) - installed
+            title = QtWidgets.QLabel(f"{len(mods)} mods selected")
+            title_font = title.font()
+            title_font.setBold(True)
+            title.setFont(title_font)
+            self.detail_layout.addWidget(title)
+            self._detail_row("Installed", str(installed))
+            self._detail_row("Not installed", str(not_installed))
+            actions = QtWidgets.QHBoxLayout()
+            install_button = QtWidgets.QPushButton(f"Install {not_installed}")
+            install_button.setIcon(self._icon("install"))
+            install_button.setToolTip("Install selected mods that are not installed")
+            install_button.setEnabled(not_installed > 0)
+            install_button.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+            install_button.clicked.connect(self._install_selected_mods)
+            uninstall_button = QtWidgets.QPushButton(f"Uninstall {installed}")
+            uninstall_button.setIcon(self._icon("uninstall"))
+            uninstall_button.setToolTip("Uninstall selected mods that are installed")
+            uninstall_button.setEnabled(installed > 0)
+            uninstall_button.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+            uninstall_button.clicked.connect(self._uninstall_selected_mods)
+            toggle_button = QtWidgets.QPushButton("Toggle selected")
+            toggle_button.setIcon(self._icon("toggle"))
+            toggle_button.setToolTip("Toggle all selected mods")
+            toggle_button.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+            toggle_button.clicked.connect(self._toggle_selected_mods)
+            actions.addWidget(install_button)
+            actions.addWidget(uninstall_button)
+            actions.addWidget(toggle_button)
+            actions.addStretch(1)
+            self.detail_layout.addLayout(actions)
+
+        def _detail_image(self, mod_name: str) -> None:
+            img_path = mod_image_path(self.cfg, mod_name)
+            if not img_path:
+                return
+            pixmap = QtGui.QPixmap(str(img_path))
+            if pixmap.isNull():
+                return
+            image = DetailImageLabel(pixmap)
+            image.update_scaled_pixmap(self._detail_image_target_size())
+            self.detail_layout.addWidget(image)
+            QtCore.QTimer.singleShot(0, self._update_detail_image_size)
+
+        def _detail_image_target_size(self, image: DetailImageLabel | None = None) -> QtCore.QSize:
+            if not hasattr(self, "detail_frame"):
+                return QtCore.QSize(1, 1)
+            margins = self.detail_layout.contentsMargins()
+            viewport_width = self.detail_scroll.viewport().width()
+            if viewport_width <= 1:
+                viewport_width = self.detail_scroll.width()
+            viewport_height = self.detail_scroll.viewport().height()
+            if viewport_height <= 1:
+                viewport_height = self.detail_scroll.height()
+            max_width = max(1, viewport_width - margins.left() - margins.right() - 2)
+            image_top = image.y() if image is not None and image.y() > 0 else margins.top()
+            max_height = max(1, viewport_height - image_top - margins.bottom() - 2)
+            return QtCore.QSize(max_width, max_height)
+
+        def _update_detail_image_size(self) -> None:
+            if not hasattr(self, "detail_frame"):
+                return
+            for image in self.detail_frame.findChildren(DetailImageLabel):
+                image.update_scaled_pixmap(self._detail_image_target_size(image))
+
+        def _refresh_mod_detail(self, mod: ModItem | None) -> None:
+            self._clear_detail()
+            if mod is None:
+                self.detail_layout.addWidget(QtWidgets.QLabel("No mod selected"))
+                return
+            self._detail_row("Name", mod.name)
+            self._detail_label_row(self.current_mod_labels.get(mod.name, "-"))
+            self._detail_state_action_row(mod)
+            self._detail_dates_row(mod)
+            self._detail_path_row("Source", mod.src)
+            self._detail_path_row("Destination", mod.dest)
+            self._detail_image(mod.name)
+            self.detail_layout.addStretch(1)
+
+        def _invalidate_mod_image(self, mod_name: str) -> None:
+            self.tile_delegate._pixmaps = {key: value for key, value in self.tile_delegate._pixmaps.items() if key[0] != mod_name}
+            for row, mod in enumerate(self.current_mods_shown):
+                if mod.name == mod_name:
+                    index = self.mods_model.index(row, 0)
+                    self.mods_model.dataChanged.emit(index, index, [QtCore.Qt.DecorationRole, QtCore.Qt.DisplayRole])
+                    self.tiles_view.viewport().update(self.tiles_view.visualRect(index))
+                    break
+
+        def refresh_all(self) -> None:
+            self.refresh_mods()
+            self.refresh_presets()
             self.refresh_broken()
 
-        self._run_action("Removing broken links", partial(_run_deactivate_batch, targets), done, file_key="broken")
+        def refresh_mods(self, selected_names: List[str] | None = None) -> None:
+            page, label_filter, search, order = self._view_args()
+            items, shown, page, pages, labels = mods_view(self.cfg, page, label_filter, search, order)
+            self.current_mod_items = items
+            self.current_mods_shown = shown
+            self.current_mod_labels = labels
+            self.current_mod_records = mods_records()
+            self.mod_page.set(page)
+            list_blocker = QtCore.QSignalBlocker(self.mods_table.selectionModel())
+            tile_blocker = QtCore.QSignalBlocker(self.tiles_view.selectionModel())
+            try:
+                self.mods_model.set_data(shown, labels, self.current_mod_records)
+                self.page_label.setText(f"Page {page}/{pages}")
+                self.search_box.clear()
+                self.search_box.addItems([m.name for m in items])
+                self.search_box.setCurrentText(search)
+                self.label_filter_box.clear()
+                self.label_filter_box.addItems(sorted({v for v in labels.values() if v}))
+                self.label_filter_box.setCurrentText(label_filter)
+                self._select_mod_names(selected_names)
+            finally:
+                del tile_blocker
+                del list_blocker
+            self._refresh_selected_detail()
 
-    def _remove_all_broken(self) -> None:
-        targets = list(self.current_broken)
+        def refresh_presets(self) -> None:
+            selected_names = [
+                self.presets_model.keys[row]
+                for row in self._selected_rows(self.presets_table)
+                if row < len(self.presets_model.keys)
+            ]
+            presets, keys, page_keys, page, pages = presets_view(self.cfg, self.preset_page.get(), self._preset_order_mode())
+            self.preset_page.set(page)
+            selection = self.presets_table.selectionModel()
+            blocker = QtCore.QSignalBlocker(selection) if selection else None
+            self.presets_table.setUpdatesEnabled(False)
+            try:
+                self.presets_model.set_data(presets, page_keys, presets_records())
+                self.preset_page_label.setText(f"Page {page}/{pages}")
+                if selection:
+                    selection.clearSelection()
+                    for name in selected_names:
+                        if name in page_keys:
+                            row = page_keys.index(name)
+                            idx = self.presets_model.index(row, 0)
+                            selection.select(idx, QtCore.QItemSelectionModel.Select | QtCore.QItemSelectionModel.Rows)
+                            self.presets_table.setCurrentIndex(idx)
+            finally:
+                self.presets_table.setUpdatesEnabled(True)
+                if blocker is not None:
+                    del blocker
 
-        def done(count) -> None:
-            self.status_var.set(f"Removed broken links: {count}")
-            self.refresh_broken()
+        def refresh_broken(self) -> None:
+            self.current_broken = list_broken_links(self.cfg)
+            self.broken_model.set_data(self.current_broken)
 
-        self._run_action("Removing all broken links", partial(_run_deactivate_batch, targets), done, file_key="broken")
+        def _mods_search(self) -> None:
+            self.search_var.set(self.search_box.currentText().strip())
+            self.label_filter_var.set(self.label_filter_box.currentText().strip())
+            self.mod_page.set(1)
+            self.refresh_mods()
+
+        def _mods_clear(self) -> None:
+            self.search_var.set("")
+            self.label_filter_var.set("")
+            self.search_box.setCurrentText("")
+            self.label_filter_box.setCurrentText("")
+            self.mod_page.set(1)
+            self.refresh_mods()
+
+        def _change_mod_page(self, delta: int) -> None:
+            self.mod_page.set(max(1, int(self.mod_page.get()) + delta))
+            self.refresh_mods()
+
+        def _change_preset_page(self, delta: int) -> None:
+            self.preset_page.set(max(1, int(self.preset_page.get()) + delta))
+            self.refresh_presets()
+
+        def _install_page(self) -> None:
+            page, label_filter, search, order = self._view_args()
+
+            def done(result):
+                target_page, total, errors = result
+                self.status_var.set(f"Installed {total - errors}/{total} on page {target_page}. Errors: {errors}.")
+                self.statusBar().showMessage(self.status_var.get())
+                self.refresh_mods()
+                self.refresh_presets()
+
+            self._run_action("Installing mods...", lambda: apply_mods_page(self.cfg, page, label_filter, search, order), done)
+
+        def _uninstall_page(self) -> None:
+            page, label_filter, search, order = self._view_args()
+
+            def done(result):
+                target_page, count = result
+                self.status_var.set(f"Uninstalled {count} on page {target_page}.")
+                self.statusBar().showMessage(self.status_var.get())
+                self.refresh_mods()
+                self.refresh_presets()
+
+            self._run_action("Uninstalling mods...", lambda: deactivate_mods_page(self.cfg, page, label_filter, search, order), done)
+
+        def _toggle_selected_mods(self) -> None:
+            indexes = self._selected_indexes()
+            names = [self.current_mods_shown[i - 1].name for i in indexes if 1 <= i <= len(self.current_mods_shown)]
+
+            def done(message):
+                self.status_var.set(message)
+                self.statusBar().showMessage(message)
+                self.refresh_mods(names)
+                self.refresh_presets()
+
+            self._run_action("Toggling mods...", lambda: toggle_mods_by_indexes(self.current_mods_shown, indexes), done)
+
+        def _selected_mod_names(self) -> list[str]:
+            return [self.current_mods_shown[i - 1].name for i in self._selected_indexes() if 1 <= i <= len(self.current_mods_shown)]
+
+        def _add_label_selected(self) -> None:
+            label = self.label_edit.text().strip()
+            self.label_edit_var.set(label)
+            if not label:
+                QtWidgets.QMessageBox.critical(self, "Label", "Enter label.")
+                return
+            targets = self._selected_mod_names()
+
+            def done(message):
+                self.status_var.set(message)
+                self.statusBar().showMessage(message)
+                self.refresh_mods(targets)
+
+            self._run_action("Adding label...", lambda: add_label_to_mods(label, targets), done)
+
+        def _remove_label_selected(self) -> None:
+            label = self.label_edit.text().strip()
+            self.label_edit_var.set(label)
+            targets = self._selected_mod_names()
+
+            def done(message):
+                self.status_var.set(message)
+                self.statusBar().showMessage(message)
+                self.refresh_mods(targets)
+
+            self._run_action("Removing label...", lambda: remove_label_from_mods(label, targets), done)
+
+        def _save_preset(self) -> None:
+            name = self.preset_name.text().strip()
+            if not name:
+                QtWidgets.QMessageBox.critical(self, "Preset", "Enter preset name.")
+                return
+
+            def done(result):
+                ok, message = result
+                self.status_var.set(message)
+                self.statusBar().showMessage(message)
+                if ok:
+                    self.refresh_presets()
+
+            self._run_action("Saving preset...", lambda: save_preset_from_installed(self.cfg, name), done)
+
+        def _toggle_selected_presets(self) -> None:
+            indexes = [row + 1 for row in self._selected_rows(self.presets_table)]
+            installed = {m.name for m in list_installed_mods(self.cfg)}
+
+            def done(result):
+                message, _messages, _has_errors = result
+                self.status_var.set(message)
+                self.statusBar().showMessage(message)
+                self.refresh_mods()
+                self.refresh_presets()
+                self._close_dialog(self.presets_dialog)
+
+            self._run_action("Toggling presets...", lambda: toggle_presets_by_indexes(self.cfg, self.preset_page.get(), indexes, installed), done)
+
+        def _toggle_preset_at_index(self, index) -> None:
+            if index.isValid() and self.presets_table.selectionModel():
+                selection = self.presets_table.selectionModel()
+                selection.clearSelection()
+                selection.select(index, QtCore.QItemSelectionModel.Select | QtCore.QItemSelectionModel.Rows)
+                self.presets_table.setCurrentIndex(index)
+            self._toggle_selected_presets()
+
+        def _delete_selected_presets(self) -> None:
+            indexes = [row + 1 for row in self._selected_rows(self.presets_table)]
+
+            def done(result):
+                removed, missing = result
+                message = f"Deleted: {removed}. Missing: {', '.join(missing) if missing else 'none'}"
+                self.status_var.set(message)
+                self.statusBar().showMessage(message)
+                self.refresh_presets()
+
+            self._run_action("Deleting presets...", lambda: delete_presets_by_indexes(self.cfg, self.preset_page.get(), indexes), done)
+
+        def _browse_setting(self, key: str) -> None:
+            path = QtWidgets.QFileDialog.getExistingDirectory(self, key)
+            if path:
+                widget = self.setting_widgets.get(key)
+                if isinstance(widget, QtWidgets.QLineEdit):
+                    widget.setText(path)
+
+        def _save_settings(self) -> None:
+            values = {}
+            for key, widget in self.setting_widgets.items():
+                if isinstance(widget, QtWidgets.QComboBox):
+                    values[key] = widget.currentText()
+                else:
+                    values[key] = widget.text()
+
+            def done(new_cfg):
+                self.cfg = new_cfg
+                self.mod_view_mode.set(self.cfg.get("mod_view_mode", "list"))
+                self._show_mod_view()
+                self.status_var.set("Settings saved.")
+                self.statusBar().showMessage("Settings saved.")
+                self.refresh_all()
+                self._close_dialog(self.settings_dialog)
+
+            self._run_action("Saving settings...", lambda: _run_save_settings(self.cfg, values), done)
+
+        def _open_folder(self, target: str) -> None:
+            open_folder(self.cfg, target)
+
+        def _remove_selected_broken(self) -> None:
+            rows = self._selected_rows(self.broken_table)
+            selected = [self.current_broken[i] for i in rows if i < len(self.current_broken)]
+
+            def done(count):
+                self.status_var.set(f"Removed broken links: {count}")
+                self.statusBar().showMessage(self.status_var.get())
+                self.refresh_broken()
+                self._close_dialog(self.broken_dialog)
+
+            self._run_action("Removing broken links...", lambda: sum(1 for mod in selected if deactivate_mod(mod)[0]), done)
+
+        def _remove_all_broken(self) -> None:
+            mods = list(self.current_broken)
+
+            def done(count):
+                self.status_var.set(f"Removed broken links: {count}")
+                self.statusBar().showMessage(self.status_var.get())
+                self.refresh_broken()
+                self._close_dialog(self.broken_dialog)
+
+            self._run_action("Removing broken links...", lambda: sum(1 for mod in mods if deactivate_mod(mod)[0]), done)
+
+        def dragEnterEvent(self, event) -> None:
+            if event.mimeData().hasUrls():
+                event.acceptProposedAction()
+            else:
+                event.ignore()
+
+        def dropEvent(self, event) -> None:
+            paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
+            if paths:
+                self._handle_mods_drop(paths)
+
+        def _handle_mods_drop(self, paths, x: int = 0, y: int = 0, target_mod_name: str = "") -> None:
+            self._import_paths([Path(p) for p in paths], image_target_name=target_mod_name)
+
+        def _handle_paste(self, event=None) -> None:
+            paths = read_clipboard_paths()
+            if paths:
+                self._handle_clipboard_paths(paths)
+                return
+            image = read_clipboard_image()
+            if image:
+                mod_name = self._choose_mod_for_image()
+                if mod_name:
+                    def done(_result):
+                        self._invalidate_mod_image(mod_name)
+                        self.refresh_mods([mod_name])
+
+                    self._run_action("Importing image...", lambda: import_mod_image(self.cfg, mod_name, image), done)
+
+        def _handle_clipboard_paths(self, paths: List[Path]) -> None:
+            self._import_paths(paths)
+
+        def _import_paths(self, paths: List[Path], image_target_name: str = "") -> None:
+            if not ensure_paths(self.cfg):
+                return
+            existing = {m.name for m in self.current_mod_items}
+            tasks = []
+            image_mods = []
+            for path in paths:
+                if is_image_file(path):
+                    mod_name = image_target_name or self._choose_mod_for_image(path.stem)
+                    if mod_name:
+                        tasks.append(("image", path, mod_name, False))
+                        image_mods.append(mod_name)
+                elif is_mod_file(path, self.cfg):
+                    replace = path.name in existing and QtWidgets.QMessageBox.question(
+                        self,
+                        "Import",
+                        f"Replace existing mod '{path.name}'?",
+                    ) == QtWidgets.QMessageBox.Yes
+                    tasks.append(("mod", path, "", replace))
+            if not tasks:
+                return
+
+            def done(result):
+                imported, skipped = result
+                message = f"Imported: {len(imported)}. Skipped: {len(skipped)}."
+                self.status_var.set(message)
+                self.statusBar().showMessage(message)
+                for mod_name in image_mods:
+                    self._invalidate_mod_image(mod_name)
+                if image_mods:
+                    self.refresh_mods(image_mods)
+                else:
+                    self.refresh_mods()
+
+            self._run_action("Importing...", lambda: _run_import_batch(self.cfg, tasks), done)
+
+        def _import_mod_files(self) -> None:
+            files, _filter = QtWidgets.QFileDialog.getOpenFileNames(self, "Import mod files")
+            self._import_paths([Path(p) for p in files])
+
+        def _import_mod_folder(self) -> None:
+            folder = QtWidgets.QFileDialog.getExistingDirectory(self, "Import mod folder")
+            if folder:
+                self._import_paths([Path(folder)])
+
+        def _choose_mod_for_image(self, default_name: str = "") -> str:
+            names = [m.name for m in self.current_mod_items]
+            if not names:
+                return ""
+            if default_name in names:
+                return default_name
+            name, ok = QtWidgets.QInputDialog.getItem(self, "Mod image", "Mod", names, 0, False)
+            return name if ok else ""
+
+        def _set_mod_image(self) -> None:
+            names = self._selected_mod_names()
+            if not names:
+                return
+            file_name, _filter = QtWidgets.QFileDialog.getOpenFileName(self, "Set mod image")
+            if not file_name:
+                return
+            mod_name = names[0]
+            def done(_result):
+                self._invalidate_mod_image(mod_name)
+                self.refresh_mods([mod_name])
+
+            self._run_action("Importing image...", lambda: import_mod_image(self.cfg, mod_name, Path(file_name)), done)
+
+
+else:
+
+    class ModManagerGui:
+        def __init__(self):
+            raise RuntimeError("PySide6 is required for the GUI. Install dependencies with: pip install -r requirements.txt")
+
 
 def run_gui() -> int:
-    app = ModManagerGui()
-    app.mainloop()
-    return 0
+    if QtWidgets is None:
+        print("PySide6 is required for the GUI. Install dependencies with: pip install -r requirements.txt")
+        return 2
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    window = ModManagerGui()
+    window.show()
+    return app.exec()
+
+
+def qt_available() -> bool:
+    return importlib.util.find_spec("PySide6") is not None
