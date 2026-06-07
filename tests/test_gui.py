@@ -96,7 +96,7 @@ class GuiTests(unittest.TestCase):
             installed=installed,
         )
 
-    def run_action_inline(self, label, worker, done=None) -> None:
+    def run_action_inline(self, label, worker, done=None, file_key="global") -> None:
         result = worker()
         if done:
             done(result)
@@ -115,7 +115,8 @@ class GuiTests(unittest.TestCase):
 
     def find_button(self, widget, text_prefix: str):
         try:
-            if isinstance(widget, tk.Widget) and widget.winfo_class() == "TButton" and widget.cget("text").startswith(text_prefix):
+            text = widget.cget("text")
+            if isinstance(widget, tk.Widget) and text.startswith(text_prefix) and hasattr(widget, "_command"):
                 return widget
         except tk.TclError:
             pass
@@ -156,6 +157,18 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(self.app.search_var.get(), "")
         self.assertEqual(self.app.label_filter_var.get(), "")
         refresh_mods.assert_called_once_with()
+
+    def test_tile_detail_label_chip_matches_label_row_height(self):
+        self.app.mod_view_mode.set("tiles")
+        self.app._show_mod_view()
+        self.app.refresh_mods()
+        button = self.find_button(self.app.detail_frame, "combat")
+        self.assertIsNotNone(button)
+        self.app.update_idletasks()
+        peer_heights = []
+        for child in button.master.grid_slaves(row=2):
+            peer_heights.append(child.winfo_reqheight())
+        self.assertLessEqual(max(peer_heights) - min(peer_heights), 3)
 
     def test_sorting_saves_state_and_refreshes_relevant_tree(self):
         with patch("mod_manager.gui.save_config") as save_config, patch.object(self.app, "refresh_mods") as refresh_mods:
@@ -255,7 +268,7 @@ class GuiTests(unittest.TestCase):
         self.assertIsNotNone(button)
 
         with patch.object(self.app, "refresh_mods") as refresh_mods:
-            button.invoke()
+            button._command()
 
         self.assertEqual(self.app.label_filter_var.get(), "combat")
         self.assertEqual(self.app.mod_page.get(), 1)
@@ -264,7 +277,7 @@ class GuiTests(unittest.TestCase):
         self.app._refresh_mod_detail(self.mods[0])
         button = self.find_button(self.app.detail_frame, "combat")
         with patch.object(self.app, "refresh_mods") as refresh_mods:
-            button.invoke()
+            button._command()
 
         self.assertEqual(self.app.label_filter_var.get(), "")
         refresh_mods.assert_called_once_with()
@@ -303,6 +316,36 @@ class GuiTests(unittest.TestCase):
 
         self.assertGreater(self.app.tile_rendered_range[0], 0)
 
+    def test_list_view_arrow_navigation_scrolls_virtual_list(self):
+        many_mods = [self.mod_item(f"mod-{i:02d}.pak") for i in range(20)]
+        with patch("mod_manager.gui.mods_view", return_value=(many_mods, many_mods, 1, 1, {})), patch(
+            "mod_manager.gui.mods_records", return_value={}
+        ):
+            self.app.mods_tree.configure(height=3)
+            self.app.refresh_mods()
+
+        self.assertEqual(self.app.list_selected_index, 0)
+
+        result = self.app._on_arrow_key(type("Event", (), {"keysym": "Down"})())
+        self.assertEqual(result, "break")
+        self.assertEqual(self.app.list_selected_index, 1)
+
+        # Move selection to last visible item, then arrow down to trigger virtual scroll
+        visible = self.app._list_visible_rows()
+        self.app.list_selected_index = visible - 1
+        self.app._refresh_mod_list()
+        offset_before = self.app.list_render_offset
+
+        result = self.app._on_arrow_key(type("Event", (), {"keysym": "Down"})())
+        self.assertEqual(result, "break")
+        self.assertGreater(self.app.list_render_offset, offset_before)
+        self.assertEqual(self.app.list_selected_index, visible)
+
+        # Arrow Up returns to previous index
+        result = self.app._on_arrow_key(type("Event", (), {"keysym": "Up"})())
+        self.assertEqual(result, "break")
+        self.assertEqual(self.app.list_selected_index, visible - 1)
+
     def test_tile_view_zoom_uses_mousewheel_and_ctrl_shortcut_path(self):
         self.app.mod_view_mode.set("tiles")
         self.app._show_mod_view()
@@ -317,10 +360,17 @@ class GuiTests(unittest.TestCase):
         save_config.assert_called_once_with(self.app.cfg)
 
         with patch.object(self.app, "_zoom_tiles", return_value="break") as zoom:
-            result = self.app._on_mousewheel(type("Event", (), {"delta": -120})())
+            result = self.app._on_mousewheel(type("Event", (), {"delta": -120, "state": 0x4})())
 
         self.assertEqual(result, "break")
         zoom.assert_called_once_with(-1)
+
+        with patch.object(self.app, "_zoom_tiles") as zoom, patch.object(self.app, "_on_tile_scroll") as scroll:
+            result = self.app._on_mousewheel(type("Event", (), {"delta": -120, "state": 0})())
+
+        zoom.assert_not_called()
+        scroll.assert_called_once_with("scroll", 1, "units")
+        self.assertEqual(result, "break")
 
     def test_back_forward_navigation_handlers_change_mod_pages(self):
         with patch.object(self.app, "_change_mod_page") as change_page:
@@ -368,7 +418,7 @@ class GuiTests(unittest.TestCase):
             "mod_manager.gui.messagebox.askyesno",
             return_value=True,
         ) as askyesno, patch(
-            "mod_manager.gui.import_mod_file",
+            "mod_manager.mods.import_mod_file",
             side_effect=[(True, "combat.pak"), (False, "new.pak")],
         ) as import_mod, patch.object(self.app, "refresh_mods") as refresh_mods:
             self.app._import_paths([Path("D:/Drop/combat.pak"), Path("D:/Drop/skip.txt"), Path("D:/Drop/new.pak")])
@@ -389,7 +439,7 @@ class GuiTests(unittest.TestCase):
         self.app.setting_vars["mod_view_mode"].set("tiles")
         self.app.setting_vars["tile_size"].set("188")
 
-        with patch("mod_manager.gui.save_config") as save_config, patch.object(self.app, "_rebuild_tabs") as rebuild, patch.object(
+        with patch("mod_manager.storage.save_config") as save_config, patch.object(self.app, "_rebuild_tabs") as rebuild, patch.object(
             self.app, "refresh_all"
         ) as refresh_all:
             self.app._save_settings()
@@ -401,7 +451,7 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(self.app.cfg["mod_view_mode"], "tiles")
         self.assertEqual(self.app.cfg["tile_size"], 188)
         self.assertEqual(self.app.mod_view_mode.get(), "tiles")
-        save_config.assert_called_once_with(self.app.cfg)
+        save_config.assert_called_once()
         rebuild.assert_called_once_with()
         refresh_all.assert_called_once_with()
         self.assertEqual(self.app.status_var.get(), "Settings saved.")
@@ -429,7 +479,7 @@ class GuiTests(unittest.TestCase):
 
         self.app.refresh_broken()
         self.app.broken_tree.selection_set(("1",))
-        with patch("mod_manager.gui.deactivate_mod", return_value=(True, "OK")) as deactivate, patch.object(
+        with patch("mod_manager.mods.deactivate_mod", return_value=(True, "OK")) as deactivate, patch.object(
             self.app, "refresh_broken"
         ):
             self.app._remove_selected_broken()

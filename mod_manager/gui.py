@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import threading
 import tkinter as tk
 import tkinter.font as tkfont
+from functools import partial
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Callable, Dict, List
@@ -30,6 +30,7 @@ from .mods import (
 from .presets import delete_presets_by_indexes, presets_records, presets_view, save_preset_from_installed, toggle_presets_by_indexes
 from .dragdrop import WindowsDropTarget, read_clipboard_image, read_clipboard_paths
 from .storage import load_config, save_config
+from .workers import WorkerPool, _run_import_batch, _run_deactivate_batch, _run_save_settings
 
 class AutocompleteCombobox(ttk.Combobox):
     def __init__(self, master, **kwargs):
@@ -205,6 +206,7 @@ class ModManagerGui(tk.Tk):
         self.list_rendered_range = (0, 0)
         self.tile_layout_job = None
         self.detail_wrap_labels = []
+        self.updating_mod_selection = False
         self.mod_sort_key = self.cfg.get("mod_sort_key", "d")
         self.mod_sort_reverse = bool(self.cfg.get("mod_sort_reverse", False))
         self.preset_sort_key = self.cfg.get("preset_sort_key", "name")
@@ -212,6 +214,8 @@ class ModManagerGui(tk.Tk):
         self.order_var.trace_add("write", self._save_order_setting)
         self.ui_scale_values = ["25%", "50%", "75%", "100%", "125%", "150%", "175%", "200%"]
         self._scroll_frames: list = []
+        self._pool = WorkerPool()
+        self._poll_job: str | None = None
         self._apply_gui_style()
         self._build()
         self.bind_all("<MouseWheel>", self._on_mousewheel)
@@ -220,6 +224,8 @@ class ModManagerGui(tk.Tk):
         self.drop_targets.append(WindowsDropTarget(self, self._handle_mods_drop))
         self.drop_targets.append(WindowsDropTarget(self.mods_tree, self._handle_mods_drop))
         self.bind("<Configure>", self._on_window_configure)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._start_polling()
         self.refresh_all()
 
     def _on_window_configure(self, event) -> None:
@@ -228,6 +234,18 @@ class ModManagerGui(tk.Tk):
         if self._resize_job:
             self.after_cancel(self._resize_job)
         self._resize_job = self.after(500, self._save_window_size)
+
+    def _start_polling(self) -> None:
+        results = self._pool.poll()
+        if results:
+            self._pool.fire_callbacks(results)
+        self._poll_job = self.after(50, self._start_polling)
+
+    def _on_close(self) -> None:
+        if self._poll_job:
+            self.after_cancel(self._poll_job)
+        self._pool.shutdown()
+        self.destroy()
 
     def _safe_bind_all(self, sequence: str, callback: Callable) -> None:
         try:
@@ -269,18 +287,41 @@ class ModManagerGui(tk.Tk):
         return "break"
 
     def _on_arrow_key(self, event):
-        if not self._is_mods_tab_active() or not self._is_tile_view():
+        if not self._is_mods_tab_active():
             return None
-        moves = {
-            "Left": -1,
-            "Right": 1,
-            "Up": -max(1, self.tile_columns),
-            "Down": max(1, self.tile_columns),
-        }
-        delta = moves.get(getattr(event, "keysym", ""))
-        if delta is None:
+        keysym = getattr(event, "keysym", "")
+        if self._is_tile_view():
+            moves = {
+                "Left": -1,
+                "Right": 1,
+                "Up": -max(1, self.tile_columns),
+                "Down": max(1, self.tile_columns),
+            }
+            delta = moves.get(keysym)
+            if delta is None:
+                return None
+            self._select_tile_index(self.tile_selected_index + delta)
+            return "break"
+        if keysym not in ("Up", "Down") or not self.current_mods_shown:
             return None
-        self._select_tile_index(self.tile_selected_index + delta)
+        delta = 1 if keysym == "Down" else -1
+        new_index = max(0, min(self.list_selected_index + delta, len(self.current_mods_shown) - 1))
+        self.list_selected_index = new_index
+        self.tile_selected_index = new_index
+        visible = self._list_visible_rows()
+        if new_index < self.list_render_offset:
+            self.list_render_offset = new_index
+        elif new_index >= self.list_render_offset + visible:
+            self.list_render_offset = max(0, new_index - visible + 1)
+        self._refresh_mod_list()
+        iid = str(new_index + 1)
+        if self.mods_tree.exists(iid):
+            self.updating_mod_selection = True
+            try:
+                self.mods_tree.selection_set(iid)
+                self.mods_tree.focus(iid)
+            finally:
+                self.updating_mod_selection = False
         return "break"
 
     def _save_window_size(self) -> None:
@@ -293,8 +334,12 @@ class ModManagerGui(tk.Tk):
             save_config(self.cfg)
 
     def _on_mousewheel(self, event) -> None:
+        ctrl_held = bool(getattr(event, "state", 0) & 0x4)
         if self._is_mods_tab_active() and self._is_tile_view():
-            return self._zoom_tiles(1 if event.delta > 0 else -1)
+            if ctrl_held:
+                return self._zoom_tiles(1 if event.delta > 0 else -1)
+            self._on_tile_scroll("scroll", int(-1 * (event.delta / 120)), "units")
+            return "break"
         if self._is_mods_tab_active() and not self._is_tile_view():
             self._on_list_scroll("scroll", int(-1 * (event.delta / 120)), "units")
             return "break"
@@ -403,7 +448,7 @@ class ModManagerGui(tk.Tk):
 
     def _on_mod_selection_changed(self) -> None:
         tree = getattr(self, "mods_tree", None)
-        if not tree or self.busy:
+        if not tree or self.busy or self.updating_mod_selection:
             return
         selection = tree.selection()
         if selection and str(selection[0]).isdigit():
@@ -434,22 +479,16 @@ class ModManagerGui(tk.Tk):
             self.status_var.set(text)
         self.update_idletasks()
 
-    def _run_action(self, label: str, worker: Callable, done: Callable | None = None) -> None:
+    def _run_action(self, label: str, worker: Callable, done: Callable | None = None, file_key: str = "global") -> None:
         if self.busy:
             return
         logger.info("action: %s", label)
         self._set_busy(True, f"{label}...")
 
-        def run():
-            result = None
-            error = None
-            try:
-                result = worker()
-            except Exception as exc:
-                error = exc
+        def callback(result, error):
             self.after(0, lambda: self._finish_action(error, result, done))
 
-        threading.Thread(target=run, daemon=True).start()
+        self._pool.submit(file_key, worker, callback=callback)
 
     def _finish_action(self, error, result, done: Callable | None) -> None:
         try:
@@ -484,6 +523,7 @@ class ModManagerGui(tk.Tk):
         top.add(self._button(top, "✕", self._mods_clear, "Clear"), padx=(6, 0))
         self.mods_view_area = ttk.Frame(self.mods_tab)
         self.mods_view_area.pack(fill="both", expand=True, pady=8)
+        self.mods_view_area.pack_propagate(False)
         self.mods_list_frame = ttk.Frame(self.mods_view_area)
         self.mods_tree = ttk.Treeview(self.mods_list_frame, columns=("name", "label", "last"), show="tree headings", selectmode="extended", style="Mods.Treeview")
         self.mods_tree_scroll = ttk.Scrollbar(self.mods_list_frame, orient="vertical", command=self._on_list_scroll)
@@ -523,6 +563,7 @@ class ModManagerGui(tk.Tk):
         self.tile_pane.add(self.detail_frame, weight=2)
         actions = WrapFrame(self.mods_tab)
         actions.pack(fill="x", side="bottom")
+        actions.configure(height=max(44, int(52 * self._ui_scale())))
         actions.add(self._button(actions, "<", lambda: self._change_mod_page(-1), "Previous page"))
         actions.add(self._button(actions, ">", lambda: self._change_mod_page(1), "Next page"), padx=(6, 12))
         actions.add(ttk.Label(actions, text="Page"))
@@ -753,6 +794,9 @@ class ModManagerGui(tk.Tk):
             return 34
 
     def _list_visible_rows(self) -> int:
+        configured = str(self.mods_tree.cget("height") or "").strip()
+        if configured.isdigit():
+            return max(1, int(configured))
         height = max(1, self.mods_tree.winfo_height() - self._list_row_height())
         return max(1, height // self._list_row_height())
 
@@ -762,7 +806,7 @@ class ModManagerGui(tk.Tk):
             return 0, 0
         visible = self._list_visible_rows()
         start = max(0, min(self.list_render_offset, max(0, total - visible)))
-        end = min(total, start + visible + 1)
+        end = min(total, start + visible)
         start = max(0, start - 1)
         return start, end
 
@@ -805,31 +849,64 @@ class ModManagerGui(tk.Tk):
         self._refresh_mod_tiles()
         return "break"
 
+    def _insert_list_row(self, index: int, position) -> None:
+        mod = self.current_mods_shown[index]
+        rec = self.current_mod_records.get(mod.name, {})
+        image = self._placeholder(mod.name, mod.installed)
+        name_display = f"✓  {mod.name}" if mod.installed else mod.name
+        tags = ("installed",) if mod.installed else ()
+        self.mods_tree.insert(
+            "", position,
+            iid=str(index + 1), text="", image=image,
+            values=(name_display, self.current_mod_labels.get(mod.name, "-"), rec.get("last_managed") or "-"),
+            tags=tags,
+        )
+
     def _refresh_mod_list(self) -> None:
         if not hasattr(self, "mods_tree") or self._is_tile_view():
             return
         selected = self.mods_tree.selection()
         selected_iids = set(selected)
         start, end = self._list_virtual_range()
+        old_start, old_end = self.list_rendered_range
         self.list_rendered_range = (start, end)
-        self.mods_tree.delete(*self.mods_tree.get_children())
-        for index in range(start, end):
-            mod = self.current_mods_shown[index]
-            rec = self.current_mod_records.get(mod.name, {})
-            last_managed = rec.get("last_managed") or "-"
-            image = self._placeholder(mod.name, mod.installed)
-            name_display = f"✓  {mod.name}" if mod.installed else mod.name
-            tags = ("installed",) if mod.installed else ()
-            iid = str(index + 1)
-            self.mods_tree.insert("", "end", iid=iid, text="", image=image, values=(name_display, self.current_mod_labels.get(mod.name, "-"), last_managed), tags=tags)
-        visible_selected = [iid for iid in selected_iids if iid in self.mods_tree.get_children()]
-        if visible_selected:
-            self.mods_tree.selection_set(visible_selected)
-        elif self.current_mods_shown and not selected_iids:
-            iid = str(self.list_selected_index + 1)
-            if iid in self.mods_tree.get_children():
-                self.mods_tree.selection_set(iid)
-                self.mods_tree.focus(iid)
+
+        overlap_start = max(start, old_start)
+        overlap_end = min(end, old_end)
+        incremental = overlap_end > overlap_start and all(
+            self.mods_tree.exists(str(i + 1)) for i in range(overlap_start, overlap_end)
+        )
+
+        if incremental:
+            gone_before = [str(i + 1) for i in range(old_start, start) if self.mods_tree.exists(str(i + 1))]
+            if gone_before:
+                self.mods_tree.delete(*gone_before)
+            gone_after = [str(i + 1) for i in range(end, old_end) if self.mods_tree.exists(str(i + 1))]
+            if gone_after:
+                self.mods_tree.delete(*gone_after)
+            for index in range(start, min(end, old_start)):
+                self._insert_list_row(index, index - start)
+            for index in range(max(start, old_end), end):
+                self._insert_list_row(index, "end")
+        else:
+            existing = self.mods_tree.get_children()
+            if existing:
+                self.mods_tree.delete(*existing)
+            for index in range(start, end):
+                self._insert_list_row(index, "end")
+
+        visible_selected = [iid for iid in selected_iids if self.mods_tree.exists(iid)]
+        self.updating_mod_selection = True
+        try:
+            if visible_selected:
+                self.mods_tree.selection_set(visible_selected)
+            elif self.current_mods_shown and not selected_iids:
+                iid = str(self.list_selected_index + 1)
+                if self.mods_tree.exists(iid):
+                    self.mods_tree.selection_set(iid)
+                    self.mods_tree.focus(iid)
+        finally:
+            self.updating_mod_selection = False
         self._sync_list_scrollbar()
 
     def _pixel_hex(self, color) -> str:
@@ -941,25 +1018,37 @@ class ModManagerGui(tk.Tk):
             self._refresh_mod_detail(None)
             return
         index = max(0, min(index, len(self.current_mods_shown) - 1))
+        prev_index = self.tile_selected_index
         self.tile_selected_index = index
         self.list_selected_index = index
         iid = str(index + 1)
         if iid in self.mods_tree.get_children():
-            self.mods_tree.selection_set(iid)
-            self.mods_tree.focus(iid)
-            self.mods_tree.see(iid)
+            self.updating_mod_selection = True
+            try:
+                self.mods_tree.selection_set(iid)
+                self.mods_tree.focus(iid)
+                self.mods_tree.see(iid)
+            finally:
+                self.updating_mod_selection = False
         start, _end = self.tile_rendered_range
-        for i, frame in enumerate(self.tile_widgets):
-            actual_index = start + i
-            selected = actual_index == index
+
+        def _set_tile_bg(actual_index: int, selected: bool) -> None:
+            widget_i = actual_index - start
+            if not (0 <= widget_i < len(self.tile_widgets)):
+                return
+            frame = self.tile_widgets[widget_i]
             mod = self.current_mods_shown[actual_index] if actual_index < len(self.current_mods_shown) else None
             bg = "#cfe8ff" if selected else ("#d4edda" if mod and mod.installed else "#f7f7f7")
-            frame.configure(bg=bg, highlightthickness=2 if selected else 1, highlightbackground="#3777b8" if selected else "#dddddd")
+            frame.configure(bg=bg, highlightbackground="#3777b8" if selected else bg)
             for child in frame.winfo_children():
                 try:
                     child.configure(bg=bg)
                 except tk.TclError:
                     pass
+
+        if prev_index != index:
+            _set_tile_bg(prev_index, False)
+        _set_tile_bg(index, True)
         self._refresh_mod_detail(self.current_mods_shown[index])
 
     def _refresh_mod_tiles(self) -> None:
@@ -981,7 +1070,7 @@ class ModManagerGui(tk.Tk):
             row = index // self.tile_columns
             col = index % self.tile_columns
             bg = "#d4edda" if mod.installed else "#f7f7f7"
-            frame = tk.Frame(self.tile_inner, bg=bg, bd=0, relief="solid", highlightthickness=1, highlightbackground="#dddddd")
+            frame = tk.Frame(self.tile_inner, bg=bg, bd=0, relief="solid", highlightthickness=2, highlightbackground=bg)
             frame.grid(row=row, column=col, sticky="n", padx=6, pady=6)
             frame.configure(width=size + 12, height=int(size * 1.32))
             frame.grid_propagate(False)
@@ -1031,9 +1120,16 @@ class ModManagerGui(tk.Tk):
         active = bool(value and value != "-" and self.label_filter_var.get().strip().lower() == value.lower())
         text = value if value and value != "-" else "-"
         suffix = " (active)" if active else ""
-        label_button = ttk.Button(parent, text=text + suffix, command=lambda v=value: self._toggle_label_filter(v))
-        if not value or value == "-":
-            label_button.configure(state="disabled")
+        label_button = ttk.Label(
+            parent,
+            text=text + suffix,
+            relief="solid",
+            padding=(4, 0),
+            cursor="hand2" if value and value != "-" else "",
+        )
+        if value and value != "-":
+            label_button._command = lambda v=value: self._toggle_label_filter(v)
+            label_button.bind("<Button-1>", lambda _event: label_button._command())
         label_button.grid(row=row, column=1, sticky="w", padx=(8, 0), pady=2)
         parent.columnconfigure(1, weight=1)
 
@@ -1114,24 +1210,13 @@ class ModManagerGui(tk.Tk):
             self.status_var.set("No supported dropped files.")
             return
 
-        def worker():
-            imported = []
-            skipped = []
-            for kind, path, mod_name, replace in tasks:
-                if kind == "image":
-                    ok, msg = import_mod_image(self.cfg, mod_name, path)
-                else:
-                    ok, msg = import_mod_file(self.cfg, path, replace)
-                (imported if ok else skipped).append(msg)
-            return imported, skipped
-
         def done(result) -> None:
             imported, skipped = result
             self.placeholder_images.clear()
             self.status_var.set(f"Imported: {len(imported)}. Skipped: {len(skipped)}.")
             self.refresh_mods()
 
-        self._run_action("Importing dropped files", worker, done)
+        self._run_action("Importing dropped files", partial(_run_import_batch, self.cfg, tasks), done, file_key="import")
 
     def _handle_paste(self, event=None) -> None:
         focused = self.focus_get()
@@ -1179,24 +1264,13 @@ class ModManagerGui(tk.Tk):
             self.status_var.set("Clipboard: no supported files.")
             return
 
-        def worker():
-            imported = []
-            skipped = []
-            for kind, path, mod_name, replace in tasks:
-                if kind == "image":
-                    ok, msg = import_mod_image(self.cfg, mod_name, path)
-                else:
-                    ok, msg = import_mod_file(self.cfg, path, replace)
-                (imported if ok else skipped).append(msg)
-            return imported, skipped
-
         def done(result) -> None:
             imported, skipped = result
             self.placeholder_images.clear()
             self.status_var.set(f"Imported: {len(imported)}. Skipped: {len(skipped)}.")
             self.refresh_mods()
 
-        self._run_action("Importing clipboard files", worker, done)
+        self._run_action("Importing clipboard files", partial(_run_import_batch, self.cfg, tasks), done, file_key="import")
 
     def _import_paths(self, paths: List[Path]) -> None:
         if self.busy or not ensure_paths(self.cfg):
@@ -1215,20 +1289,14 @@ class ModManagerGui(tk.Tk):
             self.status_var.set("No supported mod files.")
             return
 
-        def worker():
-            imported = []
-            skipped = []
-            for path, replace in tasks:
-                ok, msg = import_mod_file(self.cfg, path, replace)
-                (imported if ok else skipped).append(msg)
-            return imported, skipped
+        batch = [("mod", path, "", replace) for path, replace in tasks]
 
         def done(result) -> None:
             imported, skipped = result
             self.status_var.set(f"Imported: {len(imported)}. Skipped: {len(skipped)}.")
             self.refresh_mods()
 
-        self._run_action("Importing mods", worker, done)
+        self._run_action("Importing mods", partial(_run_import_batch, self.cfg, batch), done, file_key="import")
 
     def _import_mod_files(self) -> None:
         paths = filedialog.askopenfilenames(title="Import mods")
@@ -1264,7 +1332,7 @@ class ModManagerGui(tk.Tk):
             self.status_var.set(f"Image {'saved' if ok else 'skipped'}: {msg}")
             self.refresh_mods()
 
-        self._run_action("Saving image", lambda: import_mod_image(self.cfg, mod_name, image), done)
+        self._run_action("Saving image", partial(import_mod_image, self.cfg, mod_name, image), done, file_key=f"img:{mod_name}")
 
     def _choose_mod_for_image(self, default_name: str = "") -> str:
         names = [m.name for m in self.current_mod_items]
@@ -1408,7 +1476,7 @@ class ModManagerGui(tk.Tk):
             self.refresh_mods()
             self.refresh_presets()
 
-        self._run_action("Installing page", lambda: apply_mods_page(self.cfg, page, label, search, order), done)
+        self._run_action("Installing page", partial(apply_mods_page, self.cfg, page, label, search, order), done, file_key="page")
 
     def _uninstall_page(self) -> None:
         page, label, search, order = self._view_args()
@@ -1419,7 +1487,7 @@ class ModManagerGui(tk.Tk):
             self.refresh_mods()
             self.refresh_presets()
 
-        self._run_action("Uninstalling page", lambda: deactivate_mods_page(self.cfg, page, label, search, order), done)
+        self._run_action("Uninstalling page", partial(deactivate_mods_page, self.cfg, page, label, search, order), done, file_key="page")
 
     def _toggle_selected_mods(self) -> None:
         shown = list(self.current_mods_shown)
@@ -1431,7 +1499,7 @@ class ModManagerGui(tk.Tk):
             self.refresh_mods(selected_names)
             self.refresh_presets()
 
-        self._run_action("Toggling selected mods", lambda: toggle_mods_by_indexes(shown, indexes), done)
+        self._run_action("Toggling selected mods", partial(toggle_mods_by_indexes, shown, indexes), done, file_key="mods")
 
     def _add_label_selected(self) -> None:
         label = self.label_edit_var.get().strip()
@@ -1444,7 +1512,10 @@ class ModManagerGui(tk.Tk):
             self.status_var.set(msg)
             self.refresh_mods()
 
-        self._run_action("Adding label", lambda: add_label_to_mods(label, targets) if targets else "No mods selected.", done)
+        if not targets:
+            self.status_var.set("No mods selected.")
+            return
+        self._run_action("Adding label", partial(add_label_to_mods, label, targets), done, file_key="labels")
 
     def _remove_label_selected(self) -> None:
         label = self.label_edit_var.get().strip()
@@ -1457,19 +1528,23 @@ class ModManagerGui(tk.Tk):
             self.status_var.set(msg)
             self.refresh_mods()
 
-        self._run_action("Removing label", lambda: remove_label_from_mods(label, targets) if targets else "No mods selected.", done)
+        if not targets:
+            self.status_var.set("No mods selected.")
+            return
+        self._run_action("Removing label", partial(remove_label_from_mods, label, targets), done, file_key="labels")
 
     def _save_preset(self) -> None:
         name = self.preset_name_box.get().strip()
         if not name:
             messagebox.showerror("Preset", "Enter preset name.")
             return
+
         def done(result) -> None:
             _ok, msg = result
             self.status_var.set(msg)
             self.refresh_presets()
 
-        self._run_action("Saving preset", lambda: save_preset_from_installed(self.cfg, name), done)
+        self._run_action("Saving preset", partial(save_preset_from_installed, self.cfg, name), done, file_key="presets")
 
     def _toggle_selected_presets(self) -> None:
         if not self.search_var.get().strip() and not self.label_filter_var.get().strip() and self.current_mod_items:
@@ -1487,7 +1562,7 @@ class ModManagerGui(tk.Tk):
             self.refresh_mods()
             self.refresh_presets()
 
-        self._run_action("Toggling selected presets", lambda: toggle_presets_by_indexes(self.cfg, page, indexes, installed), done)
+        self._run_action("Toggling selected presets", partial(toggle_presets_by_indexes, self.cfg, page, indexes, installed), done, file_key="presets")
 
     def _delete_selected_presets(self) -> None:
         page = int(self.preset_page.get() or 1)
@@ -1498,7 +1573,7 @@ class ModManagerGui(tk.Tk):
             self.status_var.set(f"Deleted: {count}. Missing: {', '.join(missing) if missing else 'none'}")
             self.refresh_presets()
 
-        self._run_action("Deleting presets", lambda: delete_presets_by_indexes(self.cfg, page, indexes), done)
+        self._run_action("Deleting presets", partial(delete_presets_by_indexes, self.cfg, page, indexes), done, file_key="presets")
 
     def _browse_setting(self, key: str) -> None:
         path = filedialog.askdirectory()
@@ -1508,27 +1583,18 @@ class ModManagerGui(tk.Tk):
     def _save_settings(self) -> None:
         values = {key: var.get().strip() for key, var in self.setting_vars.items()}
 
-        def worker():
-            for key, value in values.items():
-                if key in ["page_size", "max_mod_name_len", "max_preset_name_len", "max_label_name_len", "ui_scale_percent", "gui_font_size", "tile_size", "window_width", "window_height"]:
-                    numeric = value.rstrip("%")
-                    if numeric.isdigit():
-                        self.cfg[key] = int(numeric)
-                else:
-                    self.cfg[key] = value
-            save_config(self.cfg)
-            return "Settings saved."
-
-        def done(msg) -> None:
+        def done(new_cfg) -> None:
+            self.cfg.clear()
+            self.cfg.update(new_cfg)
             self.mod_view_mode.set(self.cfg.get("mod_view_mode", "list"))
             self._rebuild_tabs()
             w = max(880, int(self.cfg.get("window_width", 1200)))
             h = max(560, int(self.cfg.get("window_height", 750)))
             self.geometry(f"{w}x{h}")
-            self.status_var.set(msg)
+            self.status_var.set("Settings saved.")
             self.refresh_all()
 
-        self._run_action("Saving settings", worker, done)
+        self._run_action("Saving settings", partial(_run_save_settings, self.cfg, values), done, file_key="config")
 
     def _open_folder(self, target: str) -> None:
         key = "mods_source_dir" if target == "source" else "game_mods_dir"
@@ -1537,37 +1603,29 @@ class ModManagerGui(tk.Tk):
             ok, msg = result
             self.status_var.set(f"Open {target} folder: {'OK' if ok else 'ERR'} - {msg}")
 
-        self._run_action(f"Opening {target} folder", lambda: open_folder(self.cfg.get(key, "")), done)
+        self._run_action(f"Opening {target} folder", partial(open_folder, self.cfg.get(key, "")), done, file_key="open")
 
     def _remove_selected_broken(self) -> None:
         targets = [self.current_broken[i - 1] for i in self._selected_indexes(self.broken_tree) if 1 <= i <= len(self.current_broken)]
 
-        def worker() -> int:
-            for mod in targets:
-                deactivate_mod(mod)
-            return len(targets)
-
         def done(count) -> None:
             self.status_var.set(f"Removed broken links: {count}")
             self.refresh_broken()
 
-        self._run_action("Removing broken links", worker, done)
+        self._run_action("Removing broken links", partial(_run_deactivate_batch, targets), done, file_key="broken")
 
     def _remove_all_broken(self) -> None:
         targets = list(self.current_broken)
 
-        def worker() -> int:
-            for mod in targets:
-                deactivate_mod(mod)
-            return len(targets)
-
         def done(count) -> None:
             self.status_var.set(f"Removed broken links: {count}")
             self.refresh_broken()
 
-        self._run_action("Removing all broken links", worker, done)
+        self._run_action("Removing all broken links", partial(_run_deactivate_batch, targets), done, file_key="broken")
 
 def run_gui() -> int:
+    import multiprocessing as mp
+    mp.freeze_support()
     app = ModManagerGui()
     app.mainloop()
     return 0
