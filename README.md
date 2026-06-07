@@ -20,6 +20,23 @@ A symlink-based mod manager for Unreal Engine games. Manages mods as symbolic li
 
 ---
 
+## Requirements
+
+- Python 3.10+
+- [PySide6](https://pypi.org/project/PySide6/) >= 6.7 — Qt 6 bindings for the GUI (LGPL v3)
+- [prompt_toolkit](https://pypi.org/project/prompt_toolkit/) — for interactive CLI tab-completion
+- [PyInstaller](https://pypi.org/project/pyinstaller/) — only needed to build a standalone executable
+
+Install all at once:
+
+```bash
+pip install -r requirements.txt
+```
+
+> **Note:** PySide6 is distributed under the LGPL v3 license. When distributing a built executable, the Qt dynamic libraries must remain replaceable in accordance with the LGPL terms.
+
+---
+
 ## Quick Start
 
 ```bash
@@ -230,3 +247,9 @@ python mod-manager.py help presets
 python mod-manager.py help settings set
 python mod-manager.py help broken remove
 ```
+
+---
+
+## License
+
+This project is released under the [MIT License](LICENSE) — you are free to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of this software with or without attribution.
