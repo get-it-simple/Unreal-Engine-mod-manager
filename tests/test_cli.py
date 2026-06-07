@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -8,12 +9,16 @@ from unittest.mock import Mock, patch
 from mod_manager.cli import run_cli
 from mod_manager.models import ModItem
 
+_FAKE_SRC = Path(tempfile.gettempdir()) / "mm_test_source"
+_FAKE_DEST = Path(tempfile.gettempdir()) / "mm_test_game"
+_FAKE_NEW_DEST = Path(tempfile.gettempdir()) / "mm_test_new_game"
+
 
 class CliRequestTests(unittest.TestCase):
     def setUp(self) -> None:
         self.cfg = {
-            "game_mods_dir": "D:/Game/Mods",
-            "mods_source_dir": "D:/Source/Mods",
+            "game_mods_dir": str(_FAKE_DEST),
+            "mods_source_dir": str(_FAKE_SRC),
             "page_size": 10,
         }
 
@@ -26,8 +31,8 @@ class CliRequestTests(unittest.TestCase):
     def mod_item(self, name: str, installed: bool = False) -> ModItem:
         return ModItem(
             name=name,
-            src=Path("D:/Source/Mods") / name,
-            dest=Path("D:/Game/Mods") / name,
+            src=_FAKE_SRC / name,
+            dest=_FAKE_DEST / name,
             is_dir=False,
             installed=installed,
         )
@@ -200,14 +205,14 @@ class CliRequestTests(unittest.TestCase):
                     "settings",
                     "set",
                     "--game-mods-dir",
-                    "D:/Game/NewMods",
+                    str(_FAKE_NEW_DEST),
                     "--page-size",
                     "25",
                 ]
             )
 
         self.assertEqual(code, 0)
-        self.assertEqual(self.cfg["game_mods_dir"], "D:/Game/NewMods")
+        self.assertEqual(self.cfg["game_mods_dir"], str(_FAKE_NEW_DEST))
         self.assertEqual(self.cfg["page_size"], 25)
         saved.assert_called_once_with(self.cfg)
         self.assertIn("Saved.", output)
@@ -300,14 +305,14 @@ class CliRequestTests(unittest.TestCase):
             source_code, source_output = self.run_request(["open", "source"])
 
         self.assertEqual(source_code, 0)
-        open_folder.assert_called_once_with("D:/Source/Mods")
+        open_folder.assert_called_once_with(str(_FAKE_SRC))
         self.assertIn("Open source folder: OK", source_output)
 
         with patch("mod_manager.cli.open_folder", return_value=(False, "denied")) as open_folder:
             game_code, game_output = self.run_request(["open", "game"])
 
         self.assertEqual(game_code, 1)
-        open_folder.assert_called_once_with("D:/Game/Mods")
+        open_folder.assert_called_once_with(str(_FAKE_DEST))
         self.assertIn("Open game folder: ERR", game_output)
 
     def test_broken_list_request_prints_items(self):

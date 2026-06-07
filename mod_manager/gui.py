@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import base64
+import io
+import queue
+import threading
 import tkinter as tk
 import tkinter.font as tkfont
 from functools import partial
@@ -196,7 +200,7 @@ class ModManagerGui(tk.Tk):
         self.busy = False
         self.action_widgets = []
         self.mod_selection_widgets = []
-        self.tile_widgets = []
+        self.tile_windows: dict = {}  # mod_index → (tk.Frame, canvas_window_id)
         self.tile_columns = 1
         self.tile_canvas_width = 0
         self.tile_selected_index = 0
@@ -205,6 +209,13 @@ class ModManagerGui(tk.Tk):
         self.list_selected_index = 0
         self.list_rendered_range = (0, 0)
         self.tile_layout_job = None
+        self._tile_img_cache: dict = {}      # (mod_name, size) → tk.PhotoImage
+        self._tile_details_done: set = set() # indices with image+label placed in frame
+        self._tile_worker_q: queue.Queue = queue.Queue()
+        self._tile_result_q: queue.Queue = queue.Queue()
+        self._tile_worker_thread: threading.Thread | None = None
+        self._tile_worker_version: int = 0
+        self._tile_result_poll_job: str | None = None
         self.detail_wrap_labels = []
         self.updating_mod_selection = False
         self.mod_sort_key = self.cfg.get("mod_sort_key", "d")
@@ -226,6 +237,7 @@ class ModManagerGui(tk.Tk):
         self.bind("<Configure>", self._on_window_configure)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._start_polling()
+        self._tile_result_poll_job = self.after(16, self._tile_result_poll)
         self.refresh_all()
 
     def _on_window_configure(self, event) -> None:
@@ -244,6 +256,8 @@ class ModManagerGui(tk.Tk):
     def _on_close(self) -> None:
         if self._poll_job:
             self.after_cancel(self._poll_job)
+        if self._tile_result_poll_job:
+            self.after_cancel(self._tile_result_poll_job)
         self._pool.shutdown()
         self.destroy()
 
@@ -397,6 +411,16 @@ class ModManagerGui(tk.Tk):
         style.configure("Mods.Treeview", rowheight=max(30, int(34 * scale)))
 
     def _rebuild_tabs(self) -> None:
+        self.tile_windows.clear()
+        self.tile_rendered_range = (0, 0)
+        self._tile_details_done.clear()
+        self._tile_img_cache.clear()
+        self._tile_worker_version += 1
+        try:
+            while True:
+                self._tile_worker_q.get_nowait()
+        except queue.Empty:
+            pass
         self.action_widgets.clear()
         self.mod_selection_widgets.clear()
         for tab in [self.mods_tab, self.presets_tab, self.settings_tab, self.broken_tab]:
@@ -553,9 +577,6 @@ class ModManagerGui(tk.Tk):
         self.tile_scroll.grid(row=0, column=1, sticky="ns")
         tile_outer.rowconfigure(0, weight=1)
         tile_outer.columnconfigure(0, weight=1)
-        self.tile_inner = ttk.Frame(self.tile_canvas)
-        self.tile_window_id = self.tile_canvas.create_window((0, 0), window=self.tile_inner, anchor="nw")
-        self.tile_inner.bind("<Configure>", self._update_tile_scrollregion)
         self.tile_canvas.bind("<Configure>", self._on_tile_canvas_configure)
         self.detail_frame = ttk.Frame(self.tile_pane, padding=(10, 4))
         self.detail_frame.bind("<Configure>", self._update_detail_wrap)
@@ -837,7 +858,9 @@ class ModManagerGui(tk.Tk):
 
     def _on_tile_scroll(self, *args) -> None:
         self.tile_canvas.yview(*args)
-        self._refresh_mod_tiles()
+        if self.tile_layout_job:
+            self.after_cancel(self.tile_layout_job)
+        self.tile_layout_job = self.after(40, self._refresh_mod_tiles)
 
     def _zoom_tiles(self, direction: int):
         if not self._is_mods_tab_active() or not self._is_tile_view():
@@ -846,7 +869,8 @@ class ModManagerGui(tk.Tk):
         self.cfg["tile_size"] = max(88, min(260, size))
         save_config(self.cfg)
         self.placeholder_images.clear()
-        self._refresh_mod_tiles()
+        self._tile_img_cache.clear()
+        self._refresh_mod_tiles(rebuild=True)
         return "break"
 
     def _insert_list_row(self, index: int, position) -> None:
@@ -972,20 +996,23 @@ class ModManagerGui(tk.Tk):
         self.placeholder_images[key] = img
         return img
 
-    def _update_tile_scrollregion(self, _event=None) -> None:
+    def _update_tile_scrollregion(self) -> None:
         if not hasattr(self, "tile_canvas"):
             return
-        rows = max(1, (len(self.current_mods_shown) + max(1, self.tile_columns) - 1) // max(1, self.tile_columns))
+        total = len(self.current_mods_shown)
+        columns = max(1, self.tile_columns)
+        rows = max(1, (total + columns - 1) // columns)
         row_h = self._tile_row_height()
-        self.tile_canvas.configure(scrollregion=(0, 0, max(1, self.tile_canvas_width), max(row_h, rows * row_h)))
+        w = max(1, self.tile_canvas_width or self.tile_canvas.winfo_width())
+        self.tile_canvas.configure(scrollregion=(0, 0, w, rows * row_h))
 
     def _on_tile_canvas_configure(self, event) -> None:
         old_columns = self.tile_columns
         self.tile_canvas_width = max(1, event.width)
-        self.tile_canvas.itemconfig(self.tile_window_id, width=event.width)
         new_columns = self._tile_column_count()
         if self._is_tile_view() and self.current_mods_shown and new_columns != old_columns:
-            self._refresh_mod_tiles()
+            self.tile_columns = new_columns
+            self._refresh_mod_tiles(rebuild=True)
         else:
             self._update_tile_scrollregion()
 
@@ -995,7 +1022,10 @@ class ModManagerGui(tk.Tk):
         return max(1, width // tile_w)
 
     def _tile_row_height(self) -> int:
-        return max(1, int(self._tile_size() * 1.32) + 12)
+        fh = getattr(self, "_tile_frame_h", None)
+        if fh is None:
+            return self._tile_size() + 68
+        return fh + 12
 
     def _tile_virtual_range(self) -> tuple[int, int]:
         total = len(self.current_mods_shown)
@@ -1005,8 +1035,8 @@ class ModManagerGui(tk.Tk):
         row_h = self._tile_row_height()
         y0 = self.tile_canvas.canvasy(0)
         height = max(1, self.tile_canvas.winfo_height())
-        first_row = max(0, int(y0 // row_h) - 1)
-        last_row = int((y0 + height) // row_h) + 1
+        first_row = max(0, int(y0 // row_h) - 3)
+        last_row = int((y0 + height) // row_h) + 3
         start = max(0, first_row * columns)
         end = min(total, (last_row + 1) * columns)
         return start, end
@@ -1030,16 +1060,16 @@ class ModManagerGui(tk.Tk):
                 self.mods_tree.see(iid)
             finally:
                 self.updating_mod_selection = False
-        start, _end = self.tile_rendered_range
 
         def _set_tile_bg(actual_index: int, selected: bool) -> None:
-            widget_i = actual_index - start
-            if not (0 <= widget_i < len(self.tile_widgets)):
+            entry = self.tile_windows.get(actual_index)
+            if entry is None:
                 return
-            frame = self.tile_widgets[widget_i]
+            frame, _ = entry
             mod = self.current_mods_shown[actual_index] if actual_index < len(self.current_mods_shown) else None
             bg = "#cfe8ff" if selected else ("#d4edda" if mod and mod.installed else "#f7f7f7")
-            frame.configure(bg=bg, highlightbackground="#3777b8" if selected else bg)
+            hl = "#3777b8" if selected else bg
+            frame.configure(bg=bg, highlightbackground=hl)
             for child in frame.winfo_children():
                 try:
                     child.configure(bg=bg)
@@ -1049,53 +1079,218 @@ class ModManagerGui(tk.Tk):
         if prev_index != index:
             _set_tile_bg(prev_index, False)
         _set_tile_bg(index, True)
+        self._scroll_tile_to_visible(index)
         self._refresh_mod_detail(self.current_mods_shown[index])
 
-    def _refresh_mod_tiles(self) -> None:
-        if not hasattr(self, "tile_inner") or not self._is_tile_view():
+    def _scroll_tile_to_visible(self, index: int) -> None:
+        if not hasattr(self, "tile_canvas"):
             return
+        columns = max(1, self.tile_columns)
+        row_h = self._tile_row_height()
+        total = len(self.current_mods_shown)
+        total_rows = max(1, (total + columns - 1) // columns)
+        total_h = total_rows * row_h
+        tile_row = index // columns
+        y_top = tile_row * row_h
+        y_bot = y_top + row_h
+        canvas_h = max(1, self.tile_canvas.winfo_height())
+        y0 = self.tile_canvas.canvasy(0)
+        y1 = y0 + canvas_h
+        if y_top < y0:
+            self.tile_canvas.yview_moveto(y_top / total_h)
+            self._refresh_mod_tiles()
+        elif y_bot > y1:
+            self.tile_canvas.yview_moveto(max(0.0, (y_bot - canvas_h) / total_h))
+            self._refresh_mod_tiles()
+
+    def _refresh_mod_tiles(self, rebuild: bool = False) -> None:
+        if not hasattr(self, "tile_canvas") or not self._is_tile_view():
+            return
+        if self.tile_layout_job:
+            self.after_cancel(self.tile_layout_job)
         self.tile_layout_job = None
-        selected_name = ""
-        if self.current_mods_shown and 0 <= self.tile_selected_index < len(self.current_mods_shown):
-            selected_name = self.current_mods_shown[self.tile_selected_index].name
-        for child in self.tile_inner.winfo_children():
-            child.destroy()
-        self.tile_widgets = []
+
+        if rebuild:
+            self._tile_worker_version += 1
+            self._tile_details_done.clear()
+            try:
+                while True:
+                    self._tile_worker_q.get_nowait()
+            except queue.Empty:
+                pass
+            for frame, wid in list(self.tile_windows.values()):
+                try:
+                    self.tile_canvas.delete(wid)
+                    frame.destroy()
+                except tk.TclError:
+                    pass
+            self.tile_windows.clear()
+            self.tile_rendered_range = (0, 0)
+
+        total = len(self.current_mods_shown)
         self.tile_columns = self._tile_column_count()
+        columns = max(1, self.tile_columns)
+
+        if total == 0:
+            self._update_tile_scrollregion()
+            self._refresh_mod_detail(None)
+            return
+
+        self.tile_selected_index = max(0, min(self.tile_selected_index, total - 1))
+
+        try:
+            line_h = tkfont.nametofont("TkDefaultFont").metrics("linespace")
+        except Exception:
+            line_h = 16
+        name_h = line_h * 2 + 4
         size = self._tile_size()
+        frame_w = size + 12
+        frame_h = size + 14 + name_h + 8
+        self._tile_frame_h = frame_h
+        row_h = self._tile_row_height()
+
         start, end = self._tile_virtual_range()
-        self.tile_rendered_range = (start, end)
+
+        for idx in [i for i in list(self.tile_windows) if i < start or i >= end]:
+            frame, wid = self.tile_windows.pop(idx)
+            self._tile_details_done.discard(idx)
+            try:
+                self.tile_canvas.delete(wid)
+                frame.destroy()
+            except tk.TclError:
+                pass
+
+        sel = self.tile_selected_index
         for index in range(start, end):
+            if index in self.tile_windows:
+                continue
             mod = self.current_mods_shown[index]
-            row = index // self.tile_columns
-            col = index % self.tile_columns
-            bg = "#d4edda" if mod.installed else "#f7f7f7"
-            frame = tk.Frame(self.tile_inner, bg=bg, bd=0, relief="solid", highlightthickness=2, highlightbackground=bg)
-            frame.grid(row=row, column=col, sticky="n", padx=6, pady=6)
-            frame.configure(width=size + 12, height=int(size * 1.32))
+            row, col = divmod(index, columns)
+            selected = (index == sel)
+            mod_bg = "#d4edda" if mod.installed else "#f7f7f7"
+            bg = "#cfe8ff" if selected else mod_bg
+            hl = "#3777b8" if selected else bg
+            frame = tk.Frame(self.tile_canvas, bg=bg, bd=0, highlightthickness=2, highlightbackground=hl)
+            frame.configure(width=frame_w, height=frame_h)
             frame.grid_propagate(False)
-            img = self._placeholder(mod.name, mod.installed, size)
-            image_label = tk.Label(frame, image=img, bg=bg)
-            image_label.image = img
-            image_label.pack(padx=6, pady=(6, 4))
-            title = f"✓ {mod.name}" if mod.installed else mod.name
-            name_label = tk.Label(frame, text=title, bg=bg, wraplength=max(60, size), justify="center")
-            name_label.pack(fill="x", padx=6)
-            label_text = self.current_mod_labels.get(mod.name) or "-"
-            label = tk.Label(frame, text=label_text, bg=bg, fg="#555555", wraplength=max(60, size), justify="center")
-            label.pack(fill="x", padx=6, pady=(2, 6))
-            for widget in [frame, image_label, name_label, label]:
-                widget.bind("<Button-1>", lambda _event, i=index: self._select_tile_index(i))
-                widget.bind("<Double-1>", lambda _event: self._toggle_selected_mods())
-            self.tile_widgets.append(frame)
-        if self.current_mods_shown:
-            if selected_name:
-                matches = [i for i, mod in enumerate(self.current_mods_shown) if mod.name == selected_name]
-                self.tile_selected_index = matches[0] if matches else min(self.tile_selected_index, len(self.current_mods_shown) - 1)
-            self._select_tile_index(self.tile_selected_index)
-        else:
-            self._select_tile_index(0)
-        self._update_tile_scrollregion()
+            x = col * (frame_w + 12) + 6
+            y = row * row_h + 6
+            wid = self.tile_canvas.create_window(x, y, window=frame, anchor="nw", width=frame_w, height=frame_h)
+            frame.bind("<Button-1>", lambda _event, i=index: self._select_tile_index(i))
+            frame.bind("<Double-1>", lambda _event: self._toggle_selected_mods())
+            self.tile_windows[index] = (frame, wid)
+            if (mod.name, size) in self._tile_img_cache:
+                self._fill_tile_detail(index, mod.name, mod.installed, size, b"")
+            else:
+                self._tile_worker_submit(index, mod.name, mod.installed, size)
+
+        self.tile_rendered_range = (start, end)
+        if rebuild:
+            self._update_tile_scrollregion()
+
+    def _tile_worker_submit(self, index: int, mod_name: str, installed: bool, size: int) -> None:
+        img_path = str(mod_image_path(self.cfg, mod_name) or "")
+        version = self._tile_worker_version
+        if not img_path or not Path(img_path).exists():
+            self.after_idle(lambda: self._tile_result_arrived(version, index, mod_name, installed, size, b""))
+            return
+        self._tile_worker_q.put((version, index, mod_name, installed, size, img_path))
+        if self._tile_worker_thread is None or not self._tile_worker_thread.is_alive():
+            self._tile_worker_thread = threading.Thread(target=self._tile_worker_run, daemon=True)
+            self._tile_worker_thread.start()
+
+    def _tile_worker_run(self) -> None:
+        from PIL import Image as _PILImage
+        while True:
+            try:
+                item = self._tile_worker_q.get(timeout=2.0)
+            except queue.Empty:
+                self._tile_result_q.put(None)
+                return
+            if item is None:
+                self._tile_result_q.put(None)
+                return
+            version, index, mod_name, installed, size, img_path = item
+            ppm_bytes = b""
+            try:
+                if img_path and Path(img_path).exists():
+                    max_h = max(28, int(size * 0.65))
+                    with _PILImage.open(img_path) as im:
+                        orig_w, orig_h = im.size
+                        if orig_w and orig_h:
+                            scale = min(size / orig_w, max_h / orig_h)
+                            tw = max(1, int(orig_w * scale))
+                            th = max(1, int(orig_h * scale))
+                            resized = im.convert("RGB").resize((tw, th), _PILImage.LANCZOS)
+                            buf = io.BytesIO()
+                            resized.save(buf, format="PNG")
+                            ppm_bytes = buf.getvalue()
+            except Exception:
+                pass
+            self._tile_result_q.put((version, index, mod_name, installed, size, ppm_bytes))
+
+    def _tile_result_poll(self) -> None:
+        filled = 0
+        try:
+            while filled < 4:
+                item = self._tile_result_q.get_nowait()
+                if item is not None:
+                    version, index, mod_name, installed, size, ppm_bytes = item
+                    self._tile_result_arrived(version, index, mod_name, installed, size, ppm_bytes)
+                    filled += 1
+        except queue.Empty:
+            pass
+        self._tile_result_poll_job = self.after(16, self._tile_result_poll)
+
+    def _tile_result_arrived(self, version: int, index: int, mod_name: str, installed: bool, size: int, ppm_bytes: bytes) -> None:
+        if version != self._tile_worker_version:
+            return
+        if index not in self.tile_windows or index in self._tile_details_done:
+            return
+        self._fill_tile_detail(index, mod_name, installed, size, ppm_bytes)
+
+    def _fill_tile_detail(self, index: int, mod_name: str, installed: bool, size: int, ppm_bytes: bytes) -> None:
+        entry = self.tile_windows.get(index)
+        if entry is None:
+            return
+        frame, _wid = entry
+        try:
+            if not frame.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        cache_key = (mod_name, size)
+        img = self._tile_img_cache.get(cache_key)
+        if img is None:
+            if ppm_bytes:
+                try:
+                    img = tk.PhotoImage(data=base64.b64encode(ppm_bytes).decode())
+                except tk.TclError:
+                    pass
+            if img is None:
+                max_h = max(28, int(size * 0.65))
+                colors = ["#d9e8fb", "#e4f4de", "#f7e6d0", "#eadff7", "#f7dfe8"]
+                color = colors[sum(ord(c) for c in mod_name) % len(colors)]
+                img = tk.PhotoImage(width=size, height=max_h)
+                img.put(color, to=(0, 0, size, max_h))
+            self._tile_img_cache[cache_key] = img
+        bg = frame.cget("bg")
+        frame_w = size + 12
+        try:
+            line_h = tkfont.nametofont("TkDefaultFont").metrics("linespace")
+        except Exception:
+            line_h = 16
+        name_h = line_h * 2 + 4
+        image_label = tk.Label(frame, image=img, bg=bg)
+        image_label.image = img
+        image_label.place(x=(frame_w - size) // 2, y=6, width=size, height=size)
+        title = f"✓ {mod_name}" if installed else mod_name
+        name_label = tk.Label(frame, text=title, bg=bg, wraplength=frame_w - 16, justify="center", anchor="n")
+        name_label.place(x=4, y=size + 12, width=frame_w - 8, height=name_h)
+        for widget in [image_label, name_label]:
+            widget.bind("<Button-1>", lambda _event, i=index: self._select_tile_index(i))
+            widget.bind("<Double-1>", lambda _event: self._toggle_selected_mods())
+        self._tile_details_done.add(index)
 
     def _detail_row(self, parent, label: str, value: str, row: int) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="nw", pady=2)
@@ -1410,7 +1605,7 @@ class ModManagerGui(tk.Tk):
         self.label_edit_box.set_completion_values(label_values)
         self._refresh_mod_list()
         if self._is_tile_view():
-            self._refresh_mod_tiles()
+            self._refresh_mod_tiles(rebuild=True)
         self.status_var.set(f"Mods page {page}/{pages}. Items: {len(items)}")
         self._on_mod_selection_changed()
 
@@ -1624,8 +1819,6 @@ class ModManagerGui(tk.Tk):
         self._run_action("Removing all broken links", partial(_run_deactivate_batch, targets), done, file_key="broken")
 
 def run_gui() -> int:
-    import multiprocessing as mp
-    mp.freeze_support()
     app = ModManagerGui()
     app.mainloop()
     return 0

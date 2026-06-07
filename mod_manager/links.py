@@ -20,7 +20,7 @@ def mklink(src: Path, dest: Path) -> Tuple[bool, str]:
                 cmd = ["cmd", "/c", "mklink", "/J", str(dest), str(src)]
             else:
                 cmd = ["cmd", "/c", "mklink", str(dest), str(src)]
-            res = subprocess.run(cmd, capture_output=True, text=True)
+            res = subprocess.run(cmd, capture_output=True, text=True, creationflags=0x08000000)
             if res.returncode != 0:
                 return False, res.stderr.strip() or res.stdout.strip() or "mklink error"
             return True, "OK"
@@ -64,7 +64,7 @@ def mklink_batch(items: List[Tuple[Path, Path, bool]]) -> List[Tuple[bool, str]]
             f.write(f"echo __END__{i}__\n")
 
     try:
-        res = subprocess.run(["cmd", "/c", bat_path], capture_output=True, text=True)
+        res = subprocess.run(["cmd", "/c", bat_path], capture_output=True, text=True, creationflags=0x08000000)
         out = (res.stdout or "").splitlines()
 
         state: dict[int, dict] = {}

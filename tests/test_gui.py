@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -7,6 +8,11 @@ from unittest.mock import patch
 import tkinter as tk
 
 from mod_manager.models import ModItem
+
+_FAKE_SRC = Path(tempfile.gettempdir()) / "mm_test_source"
+_FAKE_DEST = Path(tempfile.gettempdir()) / "mm_test_game"
+_FAKE_DROP = Path(tempfile.gettempdir()) / "mm_test_drop"
+_FAKE_NEW_DEST = Path(tempfile.gettempdir()) / "mm_test_new_game"
 
 
 class DummyDropTarget:
@@ -18,8 +24,8 @@ class DummyDropTarget:
 class GuiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.cfg = {
-            "mods_source_dir": "D:/Source/Mods",
-            "game_mods_dir": "D:/Game/Mods",
+            "mods_source_dir": str(_FAKE_SRC),
+            "game_mods_dir": str(_FAKE_DEST),
             "mod_extensions": ".pak,.utoc",
             "link_prefix": "",
             "page_size": 10,
@@ -90,8 +96,8 @@ class GuiTests(unittest.TestCase):
     def mod_item(self, name: str, installed: bool = False, is_dir: bool = False) -> ModItem:
         return ModItem(
             name=name,
-            src=Path("D:/Source/Mods") / name,
-            dest=Path("D:/Game/Mods") / name,
+            src=_FAKE_SRC / name,
+            dest=_FAKE_DEST / name,
             is_dir=is_dir,
             installed=installed,
         )
@@ -251,9 +257,12 @@ class GuiTests(unittest.TestCase):
         save_config.assert_any_call(self.app.cfg)
         self.assertEqual(self.app.tile_pane.winfo_manager(), "pack")
         self.assertEqual(self.app.mods_list_frame.winfo_manager(), "")
-        self.assertEqual(len(self.app.tile_widgets), 2)
-        self.assertIn("combat.pak", " ".join(self.widget_texts(self.app.tile_widgets[0])))
-        self.assertIn("ui.pak", " ".join(self.widget_texts(self.app.tile_widgets[1])))
+        self.assertEqual(len(self.app.tile_windows), 2)
+        self.app.update_idletasks()
+        frame0 = self.app.tile_windows[0][0]
+        frame1 = self.app.tile_windows[1][0]
+        self.assertIn("combat.pak", " ".join(self.widget_texts(frame0)))
+        self.assertIn("ui.pak", " ".join(self.widget_texts(frame1)))
         self.assertEqual(self.app.tile_selected_index, 0)
         detail_text = " ".join(self.widget_texts(self.app.detail_frame))
         self.assertIn("combat.pak", detail_text)
@@ -307,12 +316,13 @@ class GuiTests(unittest.TestCase):
         ):
             self.app.refresh_mods()
 
-        self.assertLess(len(self.app.tile_widgets), len(many_mods))
+        self.assertLess(len(self.app.tile_windows), len(many_mods))
         start, end = self.app.tile_rendered_range
         self.assertEqual(start, 0)
         self.assertLess(end, len(many_mods))
 
         self.app._on_tile_scroll("moveto", 0.5)
+        self.app._refresh_mod_tiles()
 
         self.assertGreater(self.app.tile_rendered_range[0], 0)
 
@@ -421,12 +431,12 @@ class GuiTests(unittest.TestCase):
             "mod_manager.mods.import_mod_file",
             side_effect=[(True, "combat.pak"), (False, "new.pak")],
         ) as import_mod, patch.object(self.app, "refresh_mods") as refresh_mods:
-            self.app._import_paths([Path("D:/Drop/combat.pak"), Path("D:/Drop/skip.txt"), Path("D:/Drop/new.pak")])
+            self.app._import_paths([_FAKE_DROP / "combat.pak", _FAKE_DROP / "skip.txt", _FAKE_DROP / "new.pak"])
 
         askyesno.assert_called_once()
         self.assertEqual(import_mod.call_count, 2)
-        import_mod.assert_any_call(self.app.cfg, Path("D:/Drop/combat.pak"), True)
-        import_mod.assert_any_call(self.app.cfg, Path("D:/Drop/new.pak"), False)
+        import_mod.assert_any_call(self.app.cfg, _FAKE_DROP / "combat.pak", True)
+        import_mod.assert_any_call(self.app.cfg, _FAKE_DROP / "new.pak", False)
         self.assertEqual(self.app.status_var.get(), "Imported: 1. Skipped: 1.")
         refresh_mods.assert_called_once_with()
 
@@ -434,7 +444,7 @@ class GuiTests(unittest.TestCase):
         self.app._run_action = self.run_action_inline
         self.app.setting_vars["page_size"].set("25")
         self.app.setting_vars["ui_scale_percent"].set("150%")
-        self.app.setting_vars["game_mods_dir"].set("D:/Game/NewMods")
+        self.app.setting_vars["game_mods_dir"].set(str(_FAKE_NEW_DEST))
         self.app.setting_vars["mod_extensions"].set(".pak")
         self.app.setting_vars["mod_view_mode"].set("tiles")
         self.app.setting_vars["tile_size"].set("188")
@@ -446,7 +456,7 @@ class GuiTests(unittest.TestCase):
 
         self.assertEqual(self.app.cfg["page_size"], 25)
         self.assertEqual(self.app.cfg["ui_scale_percent"], 150)
-        self.assertEqual(self.app.cfg["game_mods_dir"], "D:/Game/NewMods")
+        self.assertEqual(self.app.cfg["game_mods_dir"], str(_FAKE_NEW_DEST))
         self.assertEqual(self.app.cfg["mod_extensions"], ".pak")
         self.assertEqual(self.app.cfg["mod_view_mode"], "tiles")
         self.assertEqual(self.app.cfg["tile_size"], 188)

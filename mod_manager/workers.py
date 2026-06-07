@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import multiprocessing as mp
 import threading
 import queue as _queue
 from typing import Any, Callable
@@ -64,15 +63,14 @@ def _worker_entry(fn: Callable, args: tuple, result_queue, task_id: str, file_ke
 
 class WorkerPool:
     """
-    Runs tasks in child processes.  Tasks sharing a file_key are serialised;
+    Runs tasks in background threads.  Tasks sharing a file_key are serialised;
     tasks with different file_keys may run concurrently.
     """
 
     def __init__(self) -> None:
-        self._ctx = mp.get_context("spawn")
-        self._result_queue = self._ctx.Queue()
+        self._result_queue: _queue.Queue = _queue.Queue()
         self._pending: dict[str, list] = {}
-        self._running: dict[str, mp.Process] = {}
+        self._running: dict[str, threading.Thread] = {}
         self._callbacks: dict[str, Callable] = {}
         self._lock = threading.Lock()
         self._counter = 0
@@ -84,8 +82,8 @@ class WorkerPool:
             if callback is not None:
                 self._callbacks[task_id] = callback
             self._pending.setdefault(file_key, []).append((task_id, fn, args))
-            proc = self._running.get(file_key)
-            if proc is None or not proc.is_alive():
+            thread = self._running.get(file_key)
+            if thread is None or not thread.is_alive():
                 self._dispatch(file_key)
         return task_id
 
@@ -94,13 +92,13 @@ class WorkerPool:
         if not pending:
             return
         task_id, fn, args = pending.pop(0)
-        proc = self._ctx.Process(
+        thread = threading.Thread(
             target=_worker_entry,
             args=(fn, args, self._result_queue, task_id, file_key),
-            daemon=False,
+            daemon=True,
         )
-        proc.start()
-        self._running[file_key] = proc
+        thread.start()
+        self._running[file_key] = thread
 
     def poll(self) -> list[tuple[str, Any, Exception | None]]:
         out: list = []
@@ -126,9 +124,6 @@ class WorkerPool:
 
     def shutdown(self) -> None:
         with self._lock:
-            for proc in self._running.values():
-                if proc.is_alive():
-                    proc.terminate()
-            self._running.clear()
             self._pending.clear()
             self._callbacks.clear()
+            self._running.clear()
