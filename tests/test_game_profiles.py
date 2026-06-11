@@ -53,6 +53,28 @@ class GameProfileStorageTests(unittest.TestCase):
         self.assertEqual(cfg["active_game_profile_id"], profile["id"])
         self.assertEqual(cfg["mods_source_dir"], "D:/mods/source")
 
+    def test_mod_recursive_scan_persists_per_profile(self):
+        cfg = storage.load_config()
+        first = storage.create_game_profile(
+            "First Game",
+            {"mods_source_dir": "A", "game_mods_dir": "B", "mod_recursive_scan": True},
+            cfg,
+        )
+        second = storage.create_game_profile(
+            "Second Game",
+            {"mods_source_dir": "C", "game_mods_dir": "D"},
+            cfg,
+        )
+
+        self.assertEqual(first["mod_recursive_scan"], True)
+        self.assertFalse(second.get("mod_recursive_scan"))
+
+        storage.set_active_game_profile(cfg, first["id"])
+        self.assertEqual(cfg["mod_recursive_scan"], True)
+
+        storage.set_active_game_profile(cfg, second["id"])
+        self.assertFalse(cfg["mod_recursive_scan"])
+
     def test_legacy_presets_are_migrated_into_default_profile(self):
         storage.save_json(
             self.config_path,

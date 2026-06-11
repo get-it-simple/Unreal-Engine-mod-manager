@@ -149,9 +149,14 @@ All commands follow the pattern: `python mod-manager.py <command> <subcommand> [
 ```
 --game-mods-dir <path>
 --mods-source-dir <path>
---mod-extensions <exts>     Comma-separated, e.g. .pak,.rar
+--mod-extensions <exts>                       Comma-separated, e.g. .pak,.rar,.utoc
+--mod-recursive-scan / --no-mod-recursive-scan  Scan subfolders of the source directory
 --link-prefix <text>
 ```
+
+`--mod-extensions` accepts any number of comma-separated extensions (e.g. `.pak,.utoc,.ucas`). Add the special `folders` token (e.g. `.pak,folders`) to also treat subfolders of the source directory as mod units. If `--mod-extensions` is empty (the default), every file and folder is shown — this matches the previous behavior. If `--mod-extensions` is set without `folders`, subfolders are no longer treated as mods unless `folders` is included.
+
+`--mod-recursive-scan` makes the manager search subfolders for matching files at any depth (folders that themselves qualify as mod units, per `folders` above, are not recursed into). Files found in subfolders are linked into the game folder by their own filename.
 
 **Examples:**
 
@@ -244,7 +249,9 @@ python mod-manager.py presets delete 2,3
 --gui-text-color <#rrggbb>
 ```
 
-Game-specific paths and extension settings live in `games` profiles. The legacy `settings set --game-mods-dir`, `--mods-source-dir`, and `--mod-extensions` flags still update the active profile for compatibility.
+Game-specific paths and extension settings live in `games` profiles. The legacy `settings set --game-mods-dir`, `--mods-source-dir`, `--mod-extensions`, and `--mod-recursive-scan` flags still update the active profile for compatibility.
+
+In the GUI, the "Game profile" dialog (Games > Add/Edit) shows a "Recursive" checkbox next to the mod file extensions field — see the `games` command reference above for details on the `folders` token and recursive scanning.
 
 The GUI theme, accent color, and text color all apply immediately when saved — no restart needed. While set to `system`, the GUI also follows live OS theme/accent changes without restarting.
 

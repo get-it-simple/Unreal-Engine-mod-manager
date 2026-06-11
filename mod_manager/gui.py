@@ -963,8 +963,8 @@ if QtCore is not None:
             dialog = QtWidgets.QDialog(self)
             dialog.setWindowTitle("Game profile")
             layout = QtWidgets.QFormLayout(dialog)
-            widgets: dict[str, QtWidgets.QLineEdit] = {}
-            fields = [("name", "Game name"), *[(key, key) for key in GAME_PROFILE_KEYS]]
+            widgets: dict[str, QtWidgets.QWidget] = {}
+            fields = [("name", "Game name"), *[(key, key) for key in GAME_PROFILE_KEYS if key != "mod_recursive_scan"]]
             for key, label in fields:
                 edit = QtWidgets.QLineEdit(str(profile.get(key, "")))
                 edit.setMinimumWidth(420)
@@ -977,6 +977,16 @@ if QtCore is not None:
                     browse.setToolTip(f"Browse for {key}")
                     browse.clicked.connect(lambda _checked=False, e=edit, k=key: self._browse_game_profile_path(e, k))
                     row.addWidget(browse)
+                if key == "mod_extensions":
+                    edit.setToolTip(
+                        "Comma-separated extensions, e.g. .pak,.utoc\n"
+                        "Add 'folders' to also treat subfolders as mods."
+                    )
+                    recursive = QtWidgets.QCheckBox("Recursive")
+                    recursive.setToolTip("Scan subfolders of the source directory for matching mods")
+                    recursive.setChecked(bool(profile.get("mod_recursive_scan")))
+                    widgets["mod_recursive_scan"] = recursive
+                    row.addWidget(recursive)
                 layout.addRow(label, row)
             buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Save | QtWidgets.QDialogButtonBox.Cancel)
             buttons.accepted.connect(dialog.accept)
@@ -984,7 +994,12 @@ if QtCore is not None:
             layout.addRow(buttons)
             if dialog.exec() != QtWidgets.QDialog.Accepted:
                 return None
-            values = {key: widget.text().strip() for key, widget in widgets.items()}
+            values = {}
+            for key, widget in widgets.items():
+                if isinstance(widget, QtWidgets.QCheckBox):
+                    values[key] = widget.isChecked()
+                else:
+                    values[key] = widget.text().strip()
             if not values["name"]:
                 QtWidgets.QMessageBox.critical(self, "Game profile", "Enter game name.")
                 return None
@@ -1293,8 +1308,12 @@ if QtCore is not None:
             ]
             self.setting_widgets: dict[str, QtWidgets.QWidget] = {}
             for key in GAME_PROFILE_KEYS:
-                widget = QtWidgets.QLineEdit(str(self.cfg.get(key, "")))
-                widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+                if key == "mod_recursive_scan":
+                    widget = QtWidgets.QCheckBox()
+                    widget.setChecked(bool(self.cfg.get(key)))
+                else:
+                    widget = QtWidgets.QLineEdit(str(self.cfg.get(key, "")))
+                    widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
                 self.setting_widgets[key] = widget
             for key in keys:
                 value = self.cfg.get(key, "")
@@ -2164,6 +2183,8 @@ if QtCore is not None:
             for key, widget in self.setting_widgets.items():
                 if isinstance(widget, QtWidgets.QComboBox):
                     values[key] = widget.currentText()
+                elif isinstance(widget, QtWidgets.QCheckBox):
+                    values[key] = widget.isChecked()
                 else:
                     values[key] = widget.text()
 

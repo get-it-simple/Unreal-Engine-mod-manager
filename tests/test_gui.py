@@ -34,6 +34,7 @@ class GuiTests(unittest.TestCase):
             "mods_source_dir": str(_FAKE_SRC),
             "game_mods_dir": str(_FAKE_DEST),
             "mod_extensions": ".pak,.utoc",
+            "mod_recursive_scan": False,
             "link_prefix": "",
             "page_size": 10,
             "max_mod_name_len": 28,
@@ -614,6 +615,30 @@ class GuiTests(unittest.TestCase):
         refresh_all.assert_called_once_with()
         self.assertEqual(self.window.status_var.get(), "Settings saved.")
         self.assertFalse(self.window.settings_dialog.isVisible())
+
+    def test_save_settings_includes_recursive_scan_checkbox(self):
+        self.window._run_action = self.run_action_inline
+        self.window._open_settings_dialog()
+        recursive_widget = self.window.setting_widgets["mod_recursive_scan"]
+        self.assertIsInstance(recursive_widget, QtWidgets.QCheckBox)
+        self.assertFalse(recursive_widget.isChecked())
+        recursive_widget.setChecked(True)
+
+        with patch("mod_manager.storage.save_config"), patch.object(self.window, "refresh_all"):
+            self.window._save_settings()
+
+        self.assertEqual(self.window.cfg["mod_recursive_scan"], True)
+
+    def test_game_profile_dialog_has_recursive_checkbox_next_to_extensions(self):
+        with patch.object(QtWidgets.QDialog, "exec", return_value=QtWidgets.QDialog.Accepted):
+            values = self.window._game_profile_values({
+                "name": "My Game",
+                "mod_extensions": ".pak,.utoc",
+                "mod_recursive_scan": True,
+            })
+
+        self.assertEqual(values["mod_extensions"], ".pak,.utoc")
+        self.assertEqual(values["mod_recursive_scan"], True)
 
     def test_save_theme_setting_applies_live_without_restart(self):
         self.window._run_action = self.run_action_inline

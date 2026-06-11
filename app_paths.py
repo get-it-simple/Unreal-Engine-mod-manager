@@ -26,6 +26,7 @@ DEFAULT_CONFIG = {
     "mods_source_dir": "",
     "game_mods_dir": "",
     "mod_extensions": "",
+    "mod_recursive_scan": False,
     "link_prefix": "",
     "page_size": 10,
     "max_mod_name_len": 28,

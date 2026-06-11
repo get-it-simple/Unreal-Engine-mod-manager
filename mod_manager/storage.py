@@ -8,7 +8,7 @@ from typing import Dict, List
 
 from app_paths import CONFIG_PATH, PRESETS_PATH, LABELS_PATH, PROFILE_DATA_DIR, DEFAULT_CONFIG
 
-GAME_PROFILE_KEYS = ("game_mods_dir", "mods_source_dir", "mod_extensions", "link_prefix")
+GAME_PROFILE_KEYS = ("game_mods_dir", "mods_source_dir", "mod_extensions", "mod_recursive_scan", "link_prefix")
 
 def load_json(path: Path, default):
     if not path.exists():

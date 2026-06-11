@@ -158,7 +158,7 @@ def _run_settings(args: argparse.Namespace, cfg: Dict) -> int:
             print(f"{key}: {cfg[key]}")
         return 0
     changed = False
-    for key in ["game_mods_dir", "mods_source_dir", "mod_extensions", "page_size", "max_mod_name_len", "max_preset_name_len", "max_label_name_len", "gui_theme", "gui_accent_color_mode", "gui_accent_color", "gui_text_color_mode", "gui_text_color"]:
+    for key in ["game_mods_dir", "mods_source_dir", "mod_extensions", "mod_recursive_scan", "page_size", "max_mod_name_len", "max_preset_name_len", "max_label_name_len", "gui_theme", "gui_accent_color_mode", "gui_accent_color", "gui_text_color_mode", "gui_text_color"]:
         value = getattr(args, key)
         if value is not None:
             cfg[key] = value
@@ -298,6 +298,7 @@ def build_parser() -> argparse.ArgumentParser:
     settings_set.add_argument("--game-mods-dir")
     settings_set.add_argument("--mods-source-dir")
     settings_set.add_argument("--mod-extensions")
+    settings_set.add_argument("--mod-recursive-scan", action=argparse.BooleanOptionalAction, default=None)
     settings_set.add_argument("--page-size", type=int)
     settings_set.add_argument("--max-mod-name-len", type=int)
     settings_set.add_argument("--max-preset-name-len", type=int)
@@ -320,6 +321,7 @@ def build_parser() -> argparse.ArgumentParser:
     games_add.add_argument("--game-mods-dir", default="")
     games_add.add_argument("--mods-source-dir", default="")
     games_add.add_argument("--mod-extensions", default="")
+    games_add.add_argument("--mod-recursive-scan", action=argparse.BooleanOptionalAction, default=False)
     games_add.add_argument("--link-prefix", default="")
     games_edit = games_sub.add_parser("edit")
     games_edit.add_argument("profile_id")
@@ -327,6 +329,7 @@ def build_parser() -> argparse.ArgumentParser:
     games_edit.add_argument("--game-mods-dir")
     games_edit.add_argument("--mods-source-dir")
     games_edit.add_argument("--mod-extensions")
+    games_edit.add_argument("--mod-recursive-scan", action=argparse.BooleanOptionalAction, default=None)
     games_edit.add_argument("--link-prefix")
 
     open_parser = sub.add_parser("open")

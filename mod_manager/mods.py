@@ -22,19 +22,31 @@ def _name_without_prefix(name: str, link_prefix: str) -> str:
         return name[len(link_prefix):].lower()
     return name.lower()
 
-def parse_extensions(cfg: Dict) -> Tuple[bool, List[str]]:
+FOLDER_TOKENS = {"folder", "folders"}
+
+def parse_extensions(cfg: Dict) -> Tuple[bool, List[str], bool]:
+    """Return (show_all, extensions, include_folders) parsed from mod_extensions.
+
+    mod_extensions is a comma-separated list, e.g. ".pak,.utoc,folders".
+    The "folder"/"folders" token (case-insensitive) controls whether
+    directories under the source folder are treated as mod units. When
+    mod_extensions is empty, every file/extension and folders are allowed
+    (preserves the historical default behavior).
+    """
     exts_raw = (cfg.get("mod_extensions") or "").strip()
     if not exts_raw:
-        return True, []
-    exts = [e.lower().strip() if e.startswith(".") else "." + e.lower().strip() for e in exts_raw.split(",") if e.strip()]
-    return False, exts
+        return True, [], True
+    tokens = [t.strip() for t in exts_raw.split(",") if t.strip()]
+    include_folders = any(t.lower() in FOLDER_TOKENS for t in tokens)
+    exts = [t.lower() if t.startswith(".") else "." + t.lower() for t in tokens if t.lower() not in FOLDER_TOKENS]
+    return False, exts, include_folders
 
 def is_mod_file(path: Path, cfg: Dict) -> bool:
+    show_all, exts, include_folders = parse_extensions(cfg)
     if path.is_dir():
-        return path.name != "images"
+        return include_folders and path.name != "images"
     if not path.is_file() or is_image_file(path):
         return False
-    show_all, exts = parse_extensions(cfg)
     return show_all or path.suffix.lower() in exts
 
 def is_image_file(path: Path) -> bool:
@@ -47,28 +59,39 @@ def _link_dest_name(p: Path, link_prefix: str) -> str:
         return p.name
     return p.stem + link_prefix + p.suffix
 
+def _iter_mod_sources(src_dir: Path, recursive: bool, include_folders: bool):
+    """Yield (path, is_dir) candidates from src_dir, honoring folder/recursive options."""
+    for p in sorted(src_dir.iterdir(), key=lambda x: (x.is_file(), x.name.lower())):
+        if p.is_dir():
+            if p.name == "images":
+                continue
+            if include_folders:
+                yield p, True
+            elif recursive:
+                yield from _iter_mod_sources(p, recursive, include_folders)
+        elif p.is_file():
+            yield p, False
+
 def discover_mods(cfg: Dict) -> List[ModItem]:
     src_dir = Path(cfg.get("mods_source_dir") or "").expanduser()
     dst_dir = Path(cfg.get("game_mods_dir") or "").expanduser()
-    show_all, exts = parse_extensions(cfg)
+    show_all, exts, include_folders = parse_extensions(cfg)
+    recursive = bool(cfg.get("mod_recursive_scan"))
     link_prefix = (cfg.get("link_prefix") or "").strip()
 
     items: List[ModItem] = []
     if not src_dir.exists():
         return items
 
-    for p in sorted(src_dir.iterdir(), key=lambda x: (x.is_file(), x.name.lower())):
-        if p.is_file():
-            if (show_all or p.suffix.lower() in exts):
-                dest = dst_dir / _link_dest_name(p, link_prefix)
-                installed = dest.exists() or dest.is_symlink()
-                items.append(ModItem(name=p.name, src=p, dest=dest, is_dir=False, installed=installed))
-        elif p.is_dir():
-            if p.name == "images":
-                continue
+    for p, is_dir in _iter_mod_sources(src_dir, recursive, include_folders):
+        if is_dir:
             dest = dst_dir / p.name
             installed = dest.exists() or dest.is_symlink()
             items.append(ModItem(name=p.name, src=p, dest=dest, is_dir=True, installed=installed))
+        elif show_all or p.suffix.lower() in exts:
+            dest = dst_dir / _link_dest_name(p, link_prefix)
+            installed = dest.exists() or dest.is_symlink()
+            items.append(ModItem(name=p.name, src=p, dest=dest, is_dir=False, installed=installed))
     return items
 
 def list_installed_mods(cfg: Dict) -> List[ModItem]:

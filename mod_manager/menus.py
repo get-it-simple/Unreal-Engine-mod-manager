@@ -245,10 +245,16 @@ def _prompt_game_profile(existing: Dict | None = None) -> Dict | None:
     labels = {
         "game_mods_dir": "Game mods folder",
         "mods_source_dir": "Mods source folder",
-        "mod_extensions": "Mod file extensions",
+        "mod_extensions": "Mod file extensions (e.g. .pak,.utoc; add 'folders' to include subfolders)",
+        "mod_recursive_scan": "Recursively scan subfolders for mods",
         "link_prefix": "Link prefix",
     }
     for key in GAME_PROFILE_KEYS:
+        if key == "mod_recursive_scan":
+            current_bool = bool(existing.get(key))
+            answer = prompt(f"{labels[key]} (y/n) [{'y' if current_bool else 'n'}]: ").strip().lower()
+            values[key] = (answer in {"y", "yes"}) if answer else current_bool
+            continue
         current = str(existing.get(key, ""))
         value = prompt(f"{labels[key]} [{current}]: ").strip().strip('"')
         values[key] = str(Path(value).expanduser()) if value and key.endswith("_dir") else (value or current)
