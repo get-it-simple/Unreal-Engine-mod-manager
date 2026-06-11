@@ -13,6 +13,8 @@ except ModuleNotFoundError:
     QtGui = None
     QtWidgets = None
 
+from app_paths import APP_NAME, APP_VERSION
+
 from .cli_utils import ensure_paths, open_folder, select_in_explorer
 from .dragdrop import read_clipboard_image, read_clipboard_paths
 from .models import ModItem
@@ -552,7 +554,7 @@ if QtCore is not None:
     class ModManagerGui(QtWidgets.QMainWindow):
         def __init__(self):
             super().__init__()
-            self.setWindowTitle("Mod Manager")
+            self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
             self.cfg = normalize_game_profiles(load_config())
             self._applying_theme = False
             self._init_theme()

@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 from typing import Dict, List
 
+from app_paths import APP_NAME, APP_VERSION
+
 from .cli_utils import ensure_paths, open_folder, parse_multi_choice
 from .mods import (
     add_label_to_mods,
@@ -244,6 +246,7 @@ def _run_broken(args: argparse.Namespace, cfg: Dict) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mod-manager.py")
+    parser.add_argument("--version", action="version", version=f"{APP_NAME} v{APP_VERSION}")
     sub = parser.add_subparsers(dest="cmd")
 
     mods = sub.add_parser("mods")

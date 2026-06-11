@@ -311,6 +311,16 @@ python mod-manager.py help broken remove
 
 ---
 
+### `--version` — Show app version
+
+```bash
+python mod-manager.py --version
+```
+
+The GUI window title and the text-UI menu header also display the current app version.
+
+---
+
 ## License
 
 This project is released under the [MIT License](LICENSE) — you are free to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of this software with or without attribution.

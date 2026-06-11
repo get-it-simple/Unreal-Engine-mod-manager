@@ -5,7 +5,7 @@ import shlex
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from app_paths import PRINT_SIZE
+from app_paths import APP_NAME, APP_VERSION, PRINT_SIZE
 
 from .platform_utils import is_windows
 from .storage import (
@@ -624,7 +624,7 @@ def main_menu():
     cfg = load_config()
     while True:
         _clear()
-        print("Mod Manager — Menu")
+        print(f"{APP_NAME} v{APP_VERSION} — Menu")
         print("=" * PRINT_SIZE)
         active = next((p for p in cfg.get("game_profiles", []) if p.get("id") == cfg.get("active_game_profile_id")), None)
         print(f"Game: {active.get('name') if active else '-not selected-'}")

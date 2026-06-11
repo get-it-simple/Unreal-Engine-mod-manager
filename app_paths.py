@@ -5,6 +5,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+APP_NAME = "Mod Manager"
+APP_VERSION = "1.0.1"
+
 if getattr(sys, "frozen", False):
     APP_DIR = Path(sys.executable).resolve().parent
 elif Path(sys.argv[0]).suffix.lower() == ".pyz":
