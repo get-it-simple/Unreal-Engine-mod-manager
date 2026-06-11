@@ -40,6 +40,7 @@ class GuiTests(unittest.TestCase):
             "max_preset_name_len": 28,
             "max_label_name_len": 12,
             "button_size_percent": 100,
+            "gui_theme": "system",
             "gui_font_family": "",
             "gui_font_size": 10,
             "placeholder_image_col_width": 56,
@@ -132,11 +133,17 @@ class GuiTests(unittest.TestCase):
         self.assertIs(self.window.centralWidget(), self.window.mods_tab)
         self.assertFalse(hasattr(self.window, "tabs"))
         self.assertEqual(self.window.mods_model.rowCount(), 2)
-        self.assertEqual(self.window.mods_model.data(self.window.mods_model.index(0, 0)), "[installed] combat.pak")
-        self.assertEqual(self.window.mods_model.data(self.window.mods_model.index(0, 1)), "combat")
+        self.assertEqual(self.window.mods_model.data(self.window.mods_model.index(0, 0)), "")
+        self.assertEqual(self.window.mods_model.data(self.window.mods_model.index(0, 1)), "combat.pak")
+        self.assertEqual(self.window.mods_model.data(self.window.mods_model.index(1, 1)), "ui.pak")
+        self.assertFalse(self.window.mods_model.data(self.window.mods_model.index(0, 0), QtCore.Qt.DecorationRole).isNull())
+        self.assertFalse(self.window.mods_model.data(self.window.mods_model.index(1, 0), QtCore.Qt.DecorationRole).isNull())
+        self.assertEqual(self.window.mods_model.data(self.window.mods_model.index(0, 2)), "combat")
         self.assertEqual(self.window.presets_model.rowCount(), 2)
         self.assertEqual(self.window.presets_model.data(self.window.presets_model.index(0, 0)), "core")
-        self.assertEqual(self.window.presets_model.data(self.window.presets_model.index(0, 1)), "applied")
+        self.assertEqual(self.window.presets_model.data(self.window.presets_model.index(0, 1), QtCore.Qt.UserRole), "active")
+        self.assertEqual(self.window.presets_model.data(self.window.presets_model.index(1, 1), QtCore.Qt.UserRole), "inactive")
+        self.assertFalse(self.window.presets_model.data(self.window.presets_model.index(0, 1), QtCore.Qt.DecorationRole).isNull())
         self.assertEqual(self.window.broken_model.rowCount(), 1)
         self.assertEqual(self.window.broken_model.data(self.window.broken_model.index(0, 0)), "missing.pak")
 
@@ -144,9 +151,11 @@ class GuiTests(unittest.TestCase):
         header = self.window.mods_table.horizontalHeader()
 
         self.assertFalse(header.stretchLastSection())
-        self.assertEqual(header.sectionResizeMode(0), QtWidgets.QHeaderView.Stretch)
-        self.assertEqual(header.sectionResizeMode(1), QtWidgets.QHeaderView.ResizeToContents)
+        self.assertEqual(header.sectionResizeMode(0), QtWidgets.QHeaderView.ResizeToContents)
+        self.assertEqual(header.sectionResizeMode(1), QtWidgets.QHeaderView.Stretch)
         self.assertEqual(header.sectionResizeMode(2), QtWidgets.QHeaderView.ResizeToContents)
+        self.assertEqual(header.sectionResizeMode(3), QtWidgets.QHeaderView.ResizeToContents)
+        self.assertTrue(header.sectionsClickable())
 
     def test_manage_menu_opens_secondary_dialogs(self):
         menu_titles = [action.text() for action in self.window.menuBar().actions()]
@@ -173,7 +182,7 @@ class GuiTests(unittest.TestCase):
         self.window.search_var.set("ui")
         self.window.label_filter_var.set("combat")
 
-        self.assertEqual(self.window._view_args(), (3, "combat", "ui", "d"))
+        self.assertEqual(self.window._view_args(), (3, "combat", "ui", "default"))
 
         with patch.object(self.window, "refresh_mods") as refresh_mods:
             self.window._mods_clear()
@@ -188,14 +197,42 @@ class GuiTests(unittest.TestCase):
             self.window._set_mod_order("Created date")
 
         self.assertEqual(self.window.order_var.get(), "Created date")
-        self.assertEqual(self.window._view_args()[3], "cd")
+        self.assertEqual(self.window._view_args()[3], "created_date")
         refresh_mods.assert_called_once_with()
         save_config.assert_called_once_with(self.window.cfg)
 
         with patch.object(self.window, "refresh_mods"):
             self.window._set_mod_order("Default")
 
-        self.assertEqual(self.window._view_args()[3], "d")
+        self.assertEqual(self.window._view_args()[3], "default")
+
+        with patch.object(self.window, "refresh_mods") as refresh_mods, patch("mod_manager.gui.save_config"):
+            self.window._sort_mods_by_section(2)
+
+        self.assertEqual(self.window.mod_sort_key, "label")
+        self.assertEqual(self.window.order_box.currentText(), "Label")
+        self.assertEqual(self.window._view_args()[3], "label")
+        refresh_mods.assert_called_once_with()
+
+        with patch.object(self.window, "refresh_mods"), patch("mod_manager.gui.save_config"):
+            self.window._toggle_mod_order_direction()
+
+        self.assertEqual(self.window._view_args()[3], "-label")
+
+        with patch.object(self.window, "refresh_mods") as refresh_mods, patch("mod_manager.gui.save_config"):
+            self.window._sort_mods_by_section(2)
+
+        self.assertEqual(self.window._view_args()[3], "label")
+        refresh_mods.assert_called_once_with()
+
+        self.window.order_box.setCurrentText("Default")
+        self.window.mod_sort_key = "default"
+        self.window.mod_sort_reverse = True
+        with patch.object(self.window, "refresh_mods") as refresh_mods, patch("mod_manager.gui.save_config"):
+            self.window._activate_mod_order(self.window.order_box.currentIndex())
+
+        self.assertEqual(self.window._view_args()[3], "default")
+        refresh_mods.assert_called_once_with()
 
     def test_tile_view_uses_same_model_and_label_button_toggles_filter(self):
         with patch("mod_manager.gui.save_config") as save_config:
@@ -205,6 +242,13 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(self.window.tiles_view.model(), self.window.mods_model)
         self.assertTrue(self.window.view_tiles_button.isChecked())
         self.assertFalse(self.window.view_list_button.isChecked())
+        self.assertEqual(self.window.tile_delegate._label_badge_text("123456789"), "12345678")
+        self.assertEqual(self.window.tile_delegate._label_badge_text("-"), "")
+        metrics = QtGui.QFontMetrics(self.window.tiles_view.font())
+        long_name = "very-long-mod-name-that-needs-one-line.pak"
+        elided = self.window.tile_delegate._elided_mod_name(metrics, long_name, 48)
+        self.assertNotEqual(elided, long_name)
+        self.assertLessEqual(self.window.tile_delegate.sizeHint(QtWidgets.QStyleOptionViewItem(), self.window.mods_model.index(0, 0)).height(), 198)
         save_config.assert_called()
 
         with patch.object(self.window, "refresh_mods") as refresh_mods:
@@ -217,6 +261,62 @@ class GuiTests(unittest.TestCase):
         with patch.object(self.window, "refresh_mods") as refresh_mods:
             self.window._toggle_label_filter("combat")
 
+        self.assertEqual(self.window.label_filter_var.get(), "")
+        refresh_mods.assert_called_once_with()
+
+    def test_tile_tooltips_show_full_text_only_when_badges_are_truncated(self):
+        long_mod = self.mod_item("very-long-mod-name-that-needs-one-line.pak")
+        self.window.mods_model.set_data([long_mod], {long_mod.name: "longlabelname"}, {})
+        option = QtWidgets.QStyleOptionViewItem()
+        option.font = self.window.tiles_view.font()
+        option.rect = QtCore.QRect(0, 0, 168, 198)
+        index = self.window.mods_model.index(0, 0)
+        metrics = QtGui.QFontMetrics(option.font)
+        rect = self.window.tile_delegate._content_rect(option)
+        image_rect = self.window.tile_delegate._image_rect(rect)
+        label_rect = self.window.tile_delegate._label_badge_rect(rect, metrics, "longlabe")
+        name_rect = self.window.tile_delegate._name_badge_rect(rect, image_rect)
+
+        self.assertEqual(self.window.tile_delegate._tooltip_for_pos(option, index, label_rect.center()), "longlabelname")
+        self.assertEqual(self.window.tile_delegate._tooltip_for_pos(option, index, name_rect.center()), long_mod.name)
+
+        self.window.mods_model.set_data([self.mod_item("short.pak")], {"short.pak": "short"}, {})
+        short_index = self.window.mods_model.index(0, 0)
+        self.assertEqual(self.window.tile_delegate._tooltip_for_pos(option, short_index, label_rect.center()), "")
+        self.assertEqual(self.window.tile_delegate._tooltip_for_pos(option, short_index, name_rect.center()), "")
+
+    def test_tile_label_badge_click_toggles_label_filter(self):
+        self.window._set_view_mode("tiles")
+        option = QtWidgets.QStyleOptionViewItem()
+        option.font = self.window.tiles_view.font()
+        option.rect = QtCore.QRect(0, 0, 168, 198)
+        index = self.window.mods_model.index(0, 0)
+        rect = self.window.tile_delegate._content_rect(option)
+        metrics = QtGui.QFontMetrics(option.font)
+        label_pos = self.window.tile_delegate._label_badge_rect(rect, metrics, "combat").center()
+        event = QtGui.QMouseEvent(
+            QtCore.QEvent.MouseButtonPress,
+            QtCore.QPointF(label_pos),
+            QtCore.Qt.LeftButton,
+            QtCore.Qt.LeftButton,
+            QtCore.Qt.NoModifier,
+        )
+
+        with patch.object(self.window.tiles_view, "indexAt", return_value=index), patch.object(
+            self.window.tiles_view, "visualRect", return_value=option.rect
+        ), patch.object(self.window, "refresh_mods") as refresh_mods:
+            handled = self.window.eventFilter(self.window.tiles_view.viewport(), event)
+
+        self.assertTrue(handled)
+        self.assertEqual(self.window.label_filter_var.get(), "combat")
+        refresh_mods.assert_called_once_with()
+
+        with patch.object(self.window.tiles_view, "indexAt", return_value=index), patch.object(
+            self.window.tiles_view, "visualRect", return_value=option.rect
+        ), patch.object(self.window, "refresh_mods") as refresh_mods:
+            handled = self.window.eventFilter(self.window.tiles_view.viewport(), event)
+
+        self.assertTrue(handled)
         self.assertEqual(self.window.label_filter_var.get(), "")
         refresh_mods.assert_called_once_with()
 
@@ -313,7 +413,7 @@ class GuiTests(unittest.TestCase):
         ) as refresh_mods, patch.object(self.window, "refresh_presets") as refresh_presets:
             self.window._install_page()
 
-        apply_mods.assert_called_once_with(self.window.cfg, 2, "combat", "pak", "d")
+        apply_mods.assert_called_once_with(self.window.cfg, 2, "combat", "pak", "default")
         self.assertEqual(self.window.status_var.get(), "Installed 2/3 on page 2. Errors: 1.")
         refresh_mods.assert_called_once_with()
         refresh_presets.assert_called_once_with()
@@ -401,7 +501,13 @@ class GuiTests(unittest.TestCase):
         for key in ("page_size", "mods_source_dir", "game_mods_dir"):
             self.assertEqual(self.window.setting_widgets[key].sizePolicy().horizontalPolicy(), QtWidgets.QSizePolicy.Expanding)
         self.assertEqual(self.window.setting_widgets["mods_source_dir"].maximumWidth(), 16777215)
-        self.assertTrue(self.window.presets_table.horizontalHeader().stretchLastSection())
+        presets_header = self.window.presets_table.horizontalHeader()
+        self.assertFalse(presets_header.stretchLastSection())
+        self.assertEqual(presets_header.sectionResizeMode(0), QtWidgets.QHeaderView.Stretch)
+        self.assertEqual(presets_header.sectionResizeMode(1), QtWidgets.QHeaderView.ResizeToContents)
+        self.assertEqual(presets_header.sectionResizeMode(2), QtWidgets.QHeaderView.ResizeToContents)
+        self.assertEqual(presets_header.sectionResizeMode(3), QtWidgets.QHeaderView.ResizeToContents)
+        self.assertFalse(presets_header.highlightSections())
         self.assertTrue(self.window.broken_table.horizontalHeader().stretchLastSection())
 
     def test_settings_font_family_uses_system_font_select(self):
@@ -411,6 +517,18 @@ class GuiTests(unittest.TestCase):
         self.assertFalse(font_widget.isEditable())
         self.assertGreater(font_widget.count(), 0)
         self.assertEqual(font_widget.itemText(0), "")
+
+    def test_settings_theme_uses_restart_only_select(self):
+        theme_widget = self.window.setting_widgets["gui_theme"]
+
+        self.assertIsInstance(theme_widget, QtWidgets.QComboBox)
+        self.assertEqual([theme_widget.itemText(i) for i in range(theme_widget.count())], ["system", "light", "dark"])
+        self.assertEqual(theme_widget.currentText(), "system")
+
+        with patch.object(self.window, "_update_mod_order_direction_button") as update_icon:
+            self.window.changeEvent(QtCore.QEvent(QtCore.QEvent.PaletteChange))
+
+        update_icon.assert_not_called()
 
     def test_icon_buttons_have_palette_aware_icons_and_tooltips(self):
         icon_buttons = [
@@ -425,6 +543,10 @@ class GuiTests(unittest.TestCase):
             self.assertTrue(button.toolTip())
             self.assertTrue(button.accessibleName())
             self.assertEqual(button.iconSize(), QtCore.QSize(18, 18))
+            self.assertEqual(button.property("variant"), "acrylic")
+
+        self.assertEqual(self.window.order_direction_button.property("variant"), "acrylic")
+        self.assertFalse(self.window.order_direction_button.icon().isNull())
 
         self.window._refresh_mod_detail(self.mods[0])
         uninstall = [widget for widget in self.window.detail_frame.findChildren(QtWidgets.QPushButton) if widget.text() == "Uninstall"][0]
@@ -462,6 +584,18 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(self.window.status_var.get(), "Settings saved.")
         self.assertFalse(self.window.settings_dialog.isVisible())
 
+    def test_save_theme_setting_requires_restart_without_restyling(self):
+        self.window._run_action = self.run_action_inline
+        self.window._open_settings_dialog()
+        self.window.setting_widgets["gui_theme"].setCurrentText("dark")
+
+        with patch.object(self.window, "_apply_button_style") as apply_style:
+            self.window._save_settings()
+
+        self.assertEqual(self.window.cfg["gui_theme"], "dark")
+        apply_style.assert_not_called()
+        self.assertEqual(self.window.status_var.get(), "Settings saved. Restart required to apply theme.")
+
     def test_preset_and_broken_actions_dispatch_selected_rows(self):
         self.window._run_action = self.run_action_inline
         self.window._open_presets_dialog()
@@ -469,12 +603,12 @@ class GuiTests(unittest.TestCase):
         preset_selection.select(self.window.presets_model.index(0, 0), QtCore.QItemSelectionModel.Select | QtCore.QItemSelectionModel.Rows)
         preset_selection.select(self.window.presets_model.index(1, 0), QtCore.QItemSelectionModel.Select | QtCore.QItemSelectionModel.Rows)
 
-        with patch("mod_manager.gui.toggle_presets_by_indexes", return_value=("Preset toggled", [], False)) as toggle, patch.object(
+        with patch("mod_manager.gui.toggle_presets_by_names", return_value=("Preset toggled", [], False)) as toggle, patch.object(
             self.window, "refresh_mods"
         ), patch.object(self.window, "refresh_presets"):
             self.window._toggle_selected_presets()
 
-        toggle.assert_called_once_with(self.window.cfg, 1, [1, 2], {"combat.pak"})
+        toggle.assert_called_once_with(self.window.cfg, ["core", "ui"], {"combat.pak"})
         self.assertEqual(self.window.status_var.get(), "Preset toggled")
         self.assertFalse(self.window.presets_dialog.isVisible())
 
@@ -491,12 +625,12 @@ class GuiTests(unittest.TestCase):
     def test_preset_double_click_toggles_clicked_preset(self):
         self.window._run_action = self.run_action_inline
         self.window._open_presets_dialog()
-        with patch("mod_manager.gui.toggle_presets_by_indexes", return_value=("Preset toggled", [], False)) as toggle, patch.object(
+        with patch("mod_manager.gui.toggle_presets_by_names", return_value=("Preset toggled", [], False)) as toggle, patch.object(
             self.window, "refresh_mods"
         ), patch.object(self.window, "refresh_presets"):
             self.window.presets_table.doubleClicked.emit(self.window.presets_model.index(1, 0))
 
-        toggle.assert_called_once_with(self.window.cfg, 1, [2], {"combat.pak"})
+        toggle.assert_called_once_with(self.window.cfg, ["ui"], {"combat.pak"})
         self.assertEqual(self.window.status_var.get(), "Preset toggled")
         self.assertFalse(self.window.presets_dialog.isVisible())
 
@@ -512,9 +646,10 @@ class GuiTests(unittest.TestCase):
 
         selection = self.window.presets_table.selectionModel()
         selection.select(self.window.presets_model.index(0, 0), QtCore.QItemSelectionModel.Select | QtCore.QItemSelectionModel.Rows)
-        with patch("mod_manager.gui.delete_presets_by_indexes", return_value=(1, [])):
+        with patch("mod_manager.gui.delete_presets_by_names", return_value=(1, [])) as delete_presets:
             self.window._delete_selected_presets()
 
+        delete_presets.assert_called_once_with(["core"])
         self.assertTrue(self.window.presets_dialog.isVisible())
         self.window.presets_dialog.close()
 

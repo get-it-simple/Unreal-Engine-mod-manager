@@ -20,6 +20,7 @@ class CliRequestTests(unittest.TestCase):
             "game_mods_dir": str(_FAKE_DEST),
             "mods_source_dir": str(_FAKE_SRC),
             "page_size": 10,
+            "gui_theme": "system",
         }
 
     def run_request(self, argv):
@@ -56,7 +57,7 @@ class CliRequestTests(unittest.TestCase):
             code, output = self.run_request(["mods", "list", "--search", "pak", "--label", "combat"])
 
         self.assertEqual(code, 0)
-        mods_view.assert_called_once_with(self.cfg, 1, "combat", "pak", "d")
+        mods_view.assert_called_once_with(self.cfg, 1, "combat", "pak", "default")
         self.assertIn("Page 1/1", output)
         self.assertIn("1. [X] weapon.pak [combat]", output)
         self.assertIn("2. [ ] ui.pak [-]", output)
@@ -71,7 +72,7 @@ class CliRequestTests(unittest.TestCase):
             )
 
         self.assertEqual(code, 1)
-        apply_mods_page.assert_called_once_with(self.cfg, 2, "combat", "pak", "cd")
+        apply_mods_page.assert_called_once_with(self.cfg, 2, "combat", "pak", "created_date")
         self.assertIn("Installed 2/3 on page 2. Errors: 1.", output)
 
     def test_mods_search_command_uses_text_as_search_filter(self):
@@ -84,7 +85,7 @@ class CliRequestTests(unittest.TestCase):
             code, output = self.run_request(["mods", "search", "hud", "--page", "2", "--label", "ui", "--order", "default"])
 
         self.assertEqual(code, 0)
-        mods_view.assert_called_once_with(self.cfg, 2, "ui", "hud", "d")
+        mods_view.assert_called_once_with(self.cfg, 2, "ui", "hud", "default")
         self.assertIn("Page 2/2", output)
 
     def test_mods_label_command_uses_text_as_label_filter(self):
@@ -97,7 +98,7 @@ class CliRequestTests(unittest.TestCase):
             code, _output = self.run_request(["mods", "label", "combat", "--search", "pak", "--order", "created date"])
 
         self.assertEqual(code, 0)
-        mods_view.assert_called_once_with(self.cfg, 1, "combat", "pak", "cd")
+        mods_view.assert_called_once_with(self.cfg, 1, "combat", "pak", "created_date")
 
     def test_mods_page_and_order_commands_translate_positionals_to_view_options(self):
         shown = [self.mod_item("a.pak")]
@@ -109,7 +110,7 @@ class CliRequestTests(unittest.TestCase):
             page_code, page_output = self.run_request(["mods", "page", "4", "--search", "a", "--label", "core"])
 
         self.assertEqual(page_code, 0)
-        mods_view.assert_called_once_with(self.cfg, 4, "core", "a", "d")
+        mods_view.assert_called_once_with(self.cfg, 4, "core", "a", "default")
         self.assertIn("Page 4/5", page_output)
 
         with patch("mod_manager.cli.ensure_paths", return_value=True), patch(
@@ -119,7 +120,7 @@ class CliRequestTests(unittest.TestCase):
             order_code, _order_output = self.run_request(["mods", "order", "cd", "--page", "3"])
 
         self.assertEqual(order_code, 0)
-        mods_view.assert_called_once_with(self.cfg, 3, "", "", "cd")
+        mods_view.assert_called_once_with(self.cfg, 3, "", "", "created_date")
 
     def test_mods_toggle_request_parses_comma_separated_indexes(self):
         shown = [self.mod_item("a.pak"), self.mod_item("b.pak"), self.mod_item("c.pak")]
@@ -147,7 +148,7 @@ class CliRequestTests(unittest.TestCase):
             )
 
         self.assertEqual(code, 0)
-        deactivate_page.assert_called_once_with(self.cfg, 5, "old", "pak", "d")
+        deactivate_page.assert_called_once_with(self.cfg, 5, "old", "pak", "default")
         self.assertIn("Uninstalled 7 on page 5.", output)
 
     def test_mods_label_add_request_maps_indexes_to_visible_mod_names(self):
@@ -181,7 +182,7 @@ class CliRequestTests(unittest.TestCase):
             )
 
         self.assertEqual(code, 0)
-        mods_view.assert_called_once_with(self.cfg, 2, "combat", "pak", "d")
+        mods_view.assert_called_once_with(self.cfg, 2, "combat", "pak", "default")
         remove_label.assert_called_once_with("combat", ["a.pak"])
         self.assertIn("Label removed: combat -> a.pak", output)
 
@@ -208,12 +209,15 @@ class CliRequestTests(unittest.TestCase):
                     str(_FAKE_NEW_DEST),
                     "--page-size",
                     "25",
+                    "--gui-theme",
+                    "dark",
                 ]
             )
 
         self.assertEqual(code, 0)
         self.assertEqual(self.cfg["game_mods_dir"], str(_FAKE_NEW_DEST))
         self.assertEqual(self.cfg["page_size"], 25)
+        self.assertEqual(self.cfg["gui_theme"], "dark")
         saved.assert_called_once_with(self.cfg)
         self.assertIn("Saved.", output)
 

@@ -8,7 +8,16 @@ from typing import Dict, List, Tuple
 from app_paths import PRINT_SIZE
 
 from .platform_utils import is_windows
-from .storage import load_config, save_config
+from .storage import (
+    GAME_PROFILE_KEYS,
+    create_game_profile,
+    delete_game_profile,
+    game_abbreviation,
+    load_config,
+    save_config,
+    set_active_game_profile,
+    update_game_profile,
+)
 from .mods import (
     discover_mods,
     list_broken_links,
@@ -197,39 +206,27 @@ def menu_settings(cfg: Dict):
         _clear()
         print("Settings")
         print("=" * PRINT_SIZE)
-        print(f"1) Game mods folder: {cfg.get('game_mods_dir') or '-not set-'}")
-        print(f"2) Mods source folder: {cfg.get('mods_source_dir') or '-not set-'}")
-        print(f"3) Mod file extensions: {cfg.get('mod_extensions') or '(all)'}")
-        print(f"4) Page size: {cfg.get('page_size') or 10}")
-        print(f"5) Max mod name length: {cfg.get('max_mod_name_len') or 28}")
-        print(f"6) Max preset name length: {cfg.get('max_preset_name_len') or 28}")
-        print(f"7) Max label name length: {cfg.get('max_label_name_len') or 12}")
+        print(f"1) Page size: {cfg.get('page_size') or 10}")
+        print(f"2) Max mod name length: {cfg.get('max_mod_name_len') or 28}")
+        print(f"3) Max preset name length: {cfg.get('max_preset_name_len') or 28}")
+        print(f"4) Max label name length: {cfg.get('max_label_name_len') or 12}")
         print("\n0) Save and back\n")
-        choice = prompt("Select [0-7]: ").strip()
+        choice = prompt("Select [0-4]: ").strip()
         if choice == "1":
-            p = prompt("Enter full path to game mods folder: ").strip().strip('"')
-            cfg["game_mods_dir"] = str(Path(p).expanduser()) if p else cfg.get("game_mods_dir", "")
-        elif choice == "2":
-            p = prompt("Enter full path to mods source folder: ").strip().strip('"')
-            cfg["mods_source_dir"] = str(Path(p).expanduser()) if p else cfg.get("mods_source_dir", "")
-        elif choice == "3":
-            p = prompt("Enter extensions (comma-separated) or leave empty for all: ").strip()
-            cfg["mod_extensions"] = p
-        elif choice == "4":
             p = prompt("Enter page size: ").strip()
             if p.isdigit() and int(p) > 0:
                 cfg["page_size"] = int(p)
             else:
                 print("incorect format, please enter a number")
-        elif choice == "5":
+        elif choice == "2":
             p = prompt("Enter max mod name length: ").strip()
             if p.isdigit() and int(p) > 0:
                 cfg["max_mod_name_len"] = int(p)
-        elif choice == "6":
+        elif choice == "3":
             p = prompt("Enter max preset name length: ").strip()
             if p.isdigit() and int(p) > 0:
                 cfg["max_preset_name_len"] = int(p)
-        elif choice == "7":
+        elif choice == "4":
             p = prompt("Enter max label name length: ").strip()
             if p.isdigit() and int(p) > 0:
                 cfg["max_label_name_len"] = int(p)
@@ -237,6 +234,69 @@ def menu_settings(cfg: Dict):
             save_config(cfg)
             print("Saved.")
             return
+
+def _prompt_game_profile(existing: Dict | None = None) -> Dict | None:
+    existing = existing or {}
+    name = prompt(f"Game name [{existing.get('name', '')}]: ").strip() or existing.get("name", "")
+    if not name:
+        print("Canceled - empty game name.")
+        return None
+    values = {"name": name}
+    labels = {
+        "game_mods_dir": "Game mods folder",
+        "mods_source_dir": "Mods source folder",
+        "mod_extensions": "Mod file extensions",
+        "link_prefix": "Link prefix",
+    }
+    for key in GAME_PROFILE_KEYS:
+        current = str(existing.get(key, ""))
+        value = prompt(f"{labels[key]} [{current}]: ").strip().strip('"')
+        values[key] = str(Path(value).expanduser()) if value and key.endswith("_dir") else (value or current)
+    return values
+
+def menu_games(cfg: Dict):
+    while True:
+        _clear()
+        cfg = load_config()
+        active_id = cfg.get("active_game_profile_id", "")
+        profiles = cfg.get("game_profiles", []) or []
+        print("Games")
+        print("=" * PRINT_SIZE)
+        if not profiles:
+            print("No game profiles.")
+        for i, profile in enumerate(profiles, 1):
+            mark = "*" if profile.get("id") == active_id else " "
+            print(f"{i}) [{mark}] {game_abbreviation(profile.get('name', ''))} {profile.get('name')}")
+        print("\na) Add  |  eN Edit  |  dN Delete  |  number Select  |  0 Back")
+        choice = prompt("> ").strip().lower()
+        if choice == "0":
+            return
+        if choice == "a":
+            values = _prompt_game_profile()
+            if values:
+                create_game_profile(values.pop("name"), values, cfg)
+                save_config(cfg)
+            continue
+        if choice.startswith("e") and choice[1:].isdigit():
+            idx = int(choice[1:]) - 1
+            if 0 <= idx < len(profiles):
+                values = _prompt_game_profile(profiles[idx])
+                if values:
+                    update_game_profile(cfg, profiles[idx]["id"], values)
+                    save_config(cfg)
+            continue
+        if choice.startswith("d") and choice[1:].isdigit():
+            idx = int(choice[1:]) - 1
+            if 0 <= idx < len(profiles):
+                delete_game_profile(cfg, profiles[idx]["id"])
+                save_config(cfg)
+            continue
+        if choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(profiles):
+                set_active_game_profile(cfg, profiles[idx]["id"])
+                save_config(cfg)
+            continue
 
 def menu_mods_toggle(cfg: Dict):
     if not ensure_paths(cfg):
@@ -560,30 +620,36 @@ def main_menu():
         _clear()
         print("Mod Manager — Menu")
         print("=" * PRINT_SIZE)
-        print("1) ⚙️ Settings")
-        print("2) 🔄 Mods    - list, toggle, search")
-        print("3) 🗃️ Presets - save,  apply, toggle, delete")
-        print("4) 📋 Open mods source folder")
-        print("5) 📂 Open game mods folder")
-        print("6) 🛠️ Fix missing mods")
+        active = next((p for p in cfg.get("game_profiles", []) if p.get("id") == cfg.get("active_game_profile_id")), None)
+        print(f"Game: {active.get('name') if active else '-not selected-'}")
+        print("1) 🎮 Games")
+        print("2) ⚙️ Settings")
+        print("3) 🔄 Mods    - list, toggle, search")
+        print("4) 🗃️ Presets - save,  apply, toggle, delete")
+        print("5) 📋 Open mods source folder")
+        print("6) 📂 Open game mods folder")
+        print("7) 🛠️ Fix missing mods")
         print("0) 🏠 Exit")
-        choice = prompt("Select [0-6]: ").strip()
+        choice = prompt("Select [0-7]: ").strip()
         if choice == "1":
-            menu_settings(cfg)
+            menu_games(cfg)
             cfg = load_config()
         elif choice == "2":
-            menu_mods_toggle(cfg)
+            menu_settings(cfg)
+            cfg = load_config()
         elif choice == "3":
-            menu_presets(cfg)
+            menu_mods_toggle(cfg)
         elif choice == "4":
+            menu_presets(cfg)
+        elif choice == "5":
             ms = load_config().get("mods_source_dir", "")
             ok, msg = open_folder(ms)
             print(f"Open source folder: {'OK' if ok else 'ERR'} — {msg}")
-        elif choice == "5":
+        elif choice == "6":
             gs = load_config().get("game_mods_dir", "")
             ok, msg = open_folder(gs)
             print(f"Open game folder: {'OK' if ok else 'ERR'} — {msg}")
-        elif choice == "6":
+        elif choice == "7":
             menu_fix_broken(cfg)
         elif choice == "0":
             print("Goodbye!")

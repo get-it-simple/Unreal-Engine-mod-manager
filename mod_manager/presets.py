@@ -29,6 +29,28 @@ def delete_presets_by_names(names: List[str]) -> Tuple[int, List[str]]:
     save_presets(presets)
     return removed, missing
 
+def toggle_presets_by_names(cfg: Dict, names: List[str], installed_set: set[str]) -> Tuple[str, List[str], bool]:
+    presets = load_presets()
+    last_operation = ""
+    messages: List[str] = []
+    has_errors = False
+    for name in names:
+        mods = presets.get(name, [])
+        if name not in presets:
+            messages.append(f"Skipped: {name} (preset not found)")
+            has_errors = True
+            continue
+        all_on = bool(mods) and all(nm in installed_set for nm in mods)
+        if all_on:
+            okc, errc, msgs = deactivate_preset(cfg, name)
+            last_operation = f"Deactivated: {okc}, Errors: {errc}"
+        else:
+            okc, errc, msgs = apply_preset(cfg, name)
+            last_operation = f"Installed: {okc}, Errors: {errc}"
+            has_errors = has_errors or errc > 0
+        messages.extend(msgs)
+    return last_operation, messages, has_errors
+
 def presets_view(cfg: Dict, page: int, order_mode: str = "d") -> Tuple[Dict, List[str], List[str], int, int]:
     presets = load_presets()
     records = load_preset_records()
@@ -60,23 +82,8 @@ def delete_presets_by_indexes(cfg: Dict, page: int, indexes: List[int]) -> Tuple
 
 def toggle_presets_by_indexes(cfg: Dict, page: int, indexes: List[int], installed_set: set[str]) -> Tuple[str, List[str], bool]:
     presets, _keys, page_keys, _page, _pages = presets_view(cfg, page)
-    last_operation = ""
-    messages: List[str] = []
-    has_errors = False
-    for num in indexes:
-        if 1 <= num <= len(page_keys):
-            name = page_keys[num - 1]
-            mods = presets.get(name, [])
-            all_on = bool(mods) and all(nm in installed_set for nm in mods)
-            if all_on:
-                okc, errc, msgs = deactivate_preset(cfg, name)
-                last_operation = f"Deactivated: {okc}, Errors: {errc}"
-            else:
-                okc, errc, msgs = apply_preset(cfg, name)
-                last_operation = f"Installed: {okc}, Errors: {errc}"
-                has_errors = has_errors or errc > 0
-            messages.extend(msgs)
-    return last_operation, messages, has_errors
+    names = [page_keys[num - 1] for num in indexes if 1 <= num <= len(page_keys)]
+    return toggle_presets_by_names(cfg, names, installed_set)
 
 def apply_preset(cfg: Dict, name: str) -> Tuple[int, int, List[str]]:
     presets = load_presets()

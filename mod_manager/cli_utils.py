@@ -34,9 +34,12 @@ def truncate_text(text: str, max_len: int, suffix: str = "...") -> str:
     return s[: max_len - len(suffix)] + suffix
 
 def format_order_short(order_mode: str) -> str:
-    if order_mode in ["cd", "created date"]:
-        return "cd"
-    return "d"
+    reverse = (order_mode or "").startswith("-")
+    mode = (order_mode or "default")[1:] if reverse else (order_mode or "default")
+    aliases = {"d": "default", "cd": "created_date", "created date": "created_date"}
+    mode = aliases.get(mode, mode)
+    suffix = " desc" if reverse else " asc"
+    return f"{mode}{suffix}"
 
 def ensure_paths(cfg: Dict) -> bool:
     gs = cfg.get("game_mods_dir")

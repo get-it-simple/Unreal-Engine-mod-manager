@@ -7,6 +7,7 @@ A symlink-based mod manager for Unreal Engine games. Manages mods as symbolic li
 ## Features
 
 - Install / uninstall mods via symlinks — no file duplication
+- Game profiles with separate game folders, source folders, presets, labels, and active default selection
 - Presets — save and restore named mod sets
 - Labels — tag and filter mods by category
 - Pagination, search, and ordering
@@ -57,8 +58,10 @@ python mod-manager.py gui
 ## Data Files
 
 - `config.json` stores application settings.
-- `presets.json` stores named mod sets.
-- `labels.json` stores labels plus last-managed metadata.
+- `config.json` stores application settings and game profile definitions.
+- `profiles/<profile-id>-presets.json` stores named mod sets for each game profile.
+- `profiles/<profile-id>-labels.json` stores labels plus last-managed metadata for each game profile.
+- Existing global `presets.json` and `labels.json` remain supported when no game profile exists.
 - `<mods_source_dir>/images` stores optional mod artwork and is not treated as a mod folder.
 
 ---
@@ -129,6 +132,35 @@ python build-gui-exe.py
 
 All commands follow the pattern: `python mod-manager.py <command> <subcommand> [args] [flags]`
 
+### `games` — Manage game profiles
+
+| Subcommand | Description |
+|---|---|
+| `list` | List game profiles and mark the active default |
+| `add <name>` | Add a profile and make it active |
+| `select <profile-id>` | Select the active profile for the next launch |
+| `edit <profile-id>` | Update profile name or game-specific settings |
+| `delete <profile-id>` | Delete a profile |
+
+**Profile options:**
+
+```
+--game-mods-dir <path>
+--mods-source-dir <path>
+--mod-extensions <exts>     Comma-separated, e.g. .pak,.rar
+--link-prefix <text>
+```
+
+**Examples:**
+
+```bash
+python mod-manager.py games add "Stalker 2" --mods-source-dir "D:/Mods/Stalker2" --game-mods-dir "C:/Games/Stalker2/Content/Paks/~mods"
+python mod-manager.py games list
+python mod-manager.py games select <profile-id>
+```
+
+---
+
 ### `mods` — Manage mods
 
 | Subcommand | Description |
@@ -137,7 +169,7 @@ All commands follow the pattern: `python mod-manager.py <command> <subcommand> [
 | `search <text>` | Filter by name |
 | `label <text>` | Filter by label |
 | `page <n>` | Go to page `n` |
-| `order <mode>` | Sort order: `d` (default) or `cd` (created date) |
+| `order <mode>` | Sort order field and direction |
 | `install` | Install all mods on page |
 | `uninstall` | Uninstall all mods on page |
 | `toggle <indexes>` | Toggle mods by index (comma-separated) |
@@ -150,13 +182,18 @@ All commands follow the pattern: `python mod-manager.py <command> <subcommand> [
 --page <n>       Page number (default: 1)
 --label <text>   Filter by label
 --search <text>  Filter by name
---order d|cd     Sort order
+--order <mode>   Sort order
 ```
+
+Order modes: `default`, `created_date`, `last_managed`, `label`, `name`, `installed`.
+Prefix any mode with `-` for descending order, for example `--order -last_managed`.
+Legacy `d` and `cd` aliases still work.
 
 **Examples:**
 
 ```bash
 python mod-manager.py mods list --page 2 --search weapon
+python mod-manager.py mods list --order -last_managed
 python mod-manager.py mods toggle 1,3,5
 python mod-manager.py mods label-add combat 2,4 --page 1
 python mod-manager.py mods install --label combat
@@ -194,20 +231,22 @@ python mod-manager.py presets delete 2,3
 **`set` options:**
 
 ```
---game-mods-dir <path>
---mods-source-dir <path>
---mod-extensions <exts>     Comma-separated, e.g. .pak,.rar
 --page-size <n>
 --max-mod-name-len <n>
 --max-preset-name-len <n>
 --max-label-name-len <n>
+--gui-theme system|light|dark
 ```
+
+Game-specific paths and extension settings live in `games` profiles. The legacy `settings set --game-mods-dir`, `--mods-source-dir`, and `--mod-extensions` flags still update the active profile for compatibility.
+GUI theme changes are applied on the next application start. The `system` option uses the system theme detected at startup and does not update while the app is running.
 
 **Examples:**
 
 ```bash
 python mod-manager.py settings show
-python mod-manager.py settings set --game-mods-dir "C:/Game/Mods" --page-size 20
+python mod-manager.py settings set --page-size 20
+python mod-manager.py settings set --gui-theme dark
 ```
 
 ---

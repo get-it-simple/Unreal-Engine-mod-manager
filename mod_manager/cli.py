@@ -20,18 +20,49 @@ from .presets import (
     save_preset_from_installed,
     toggle_presets_by_indexes,
 )
-from .storage import load_config, save_config
+from .storage import (
+    GAME_PROFILE_KEYS,
+    create_game_profile,
+    delete_game_profile,
+    game_abbreviation,
+    load_config,
+    save_config,
+    set_active_game_profile,
+    update_game_profile,
+)
 
 def _indexes(value: str) -> List[int]:
     return parse_multi_choice(value or "")
 
 def _order(value: str) -> str:
     v = (value or "d").strip().lower()
-    if v in ["d", "default"]:
-        return "d"
-    if v in ["cd", "created date"]:
-        return "cd"
-    raise argparse.ArgumentTypeError("order must be one of: d, default, cd, created date")
+    aliases = {
+        "d": "default",
+        "default": "default",
+        "default desc": "-default",
+        "cd": "created_date",
+        "created date": "created_date",
+        "created_date": "created_date",
+        "created date desc": "-created_date",
+        "created_date desc": "-created_date",
+        "name": "name",
+        "name desc": "-name",
+        "label": "label",
+        "label desc": "-label",
+        "installed": "installed",
+        "installed desc": "-installed",
+        "last managed": "last_managed",
+        "last_managed": "last_managed",
+        "last managed desc": "-last_managed",
+        "last_managed desc": "-last_managed",
+    }
+    if v.startswith("-"):
+        key = v[1:]
+        if key in {"default", "created_date", "created date", "name", "label", "installed", "last_managed", "last managed"}:
+            return "-" + aliases.get(key, key.replace(" ", "_"))
+    if v in aliases:
+        return aliases[v]
+    raise argparse.ArgumentTypeError("order must be one of: default, created_date, name, label, installed, last_managed, with optional '-' prefix or ' desc'")
 
 def _add_view_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--page", type=int, default=1)
@@ -127,7 +158,7 @@ def _run_settings(args: argparse.Namespace, cfg: Dict) -> int:
             print(f"{key}: {cfg[key]}")
         return 0
     changed = False
-    for key in ["game_mods_dir", "mods_source_dir", "mod_extensions", "page_size", "max_mod_name_len", "max_preset_name_len", "max_label_name_len"]:
+    for key in ["game_mods_dir", "mods_source_dir", "mod_extensions", "page_size", "max_mod_name_len", "max_preset_name_len", "max_label_name_len", "gui_theme"]:
         value = getattr(args, key)
         if value is not None:
             cfg[key] = value
@@ -138,6 +169,55 @@ def _run_settings(args: argparse.Namespace, cfg: Dict) -> int:
     else:
         print("Nothing changed.")
     return 0
+
+def _profile_values_from_args(args: argparse.Namespace) -> Dict:
+    values = {}
+    if getattr(args, "name", None) is not None:
+        values["name"] = args.name
+    for key in GAME_PROFILE_KEYS:
+        value = getattr(args, key, None)
+        if value is not None:
+            values[key] = value
+    return values
+
+def _run_games(args: argparse.Namespace, cfg: Dict) -> int:
+    profiles = cfg.get("game_profiles", []) or []
+    if args.games_cmd == "list":
+        active_id = cfg.get("active_game_profile_id", "")
+        for profile in profiles:
+            mark = "*" if profile.get("id") == active_id else " "
+            print(f"{mark} {profile.get('id')} {game_abbreviation(profile.get('name', ''))} {profile.get('name')}")
+        if not profiles:
+            print("No game profiles.")
+        return 0
+    if args.games_cmd == "select":
+        if set_active_game_profile(cfg, args.profile_id):
+            save_config(cfg)
+            print("Selected.")
+            return 0
+        print("Game profile not found.")
+        return 1
+    if args.games_cmd == "add":
+        values = _profile_values_from_args(args)
+        create_game_profile(values.pop("name"), values, cfg)
+        save_config(cfg)
+        print("Added.")
+        return 0
+    if args.games_cmd == "edit":
+        if update_game_profile(cfg, args.profile_id, _profile_values_from_args(args)):
+            save_config(cfg)
+            print("Saved.")
+            return 0
+        print("Game profile not found.")
+        return 1
+    if args.games_cmd == "delete":
+        if delete_game_profile(cfg, args.profile_id):
+            save_config(cfg)
+            print("Deleted.")
+            return 0
+        print("Game profile not found.")
+        return 1
+    return 1
 
 def _run_open(args: argparse.Namespace, cfg: Dict) -> int:
     key = "mods_source_dir" if args.target == "source" else "game_mods_dir"
@@ -222,6 +302,28 @@ def build_parser() -> argparse.ArgumentParser:
     settings_set.add_argument("--max-mod-name-len", type=int)
     settings_set.add_argument("--max-preset-name-len", type=int)
     settings_set.add_argument("--max-label-name-len", type=int)
+    settings_set.add_argument("--gui-theme", choices=["system", "light", "dark"])
+
+    games = sub.add_parser("games")
+    games_sub = games.add_subparsers(dest="games_cmd", required=True)
+    games_sub.add_parser("list")
+    games_select = games_sub.add_parser("select")
+    games_select.add_argument("profile_id")
+    games_delete = games_sub.add_parser("delete")
+    games_delete.add_argument("profile_id")
+    games_add = games_sub.add_parser("add")
+    games_add.add_argument("name")
+    games_add.add_argument("--game-mods-dir", default="")
+    games_add.add_argument("--mods-source-dir", default="")
+    games_add.add_argument("--mod-extensions", default="")
+    games_add.add_argument("--link-prefix", default="")
+    games_edit = games_sub.add_parser("edit")
+    games_edit.add_argument("profile_id")
+    games_edit.add_argument("--name")
+    games_edit.add_argument("--game-mods-dir")
+    games_edit.add_argument("--mods-source-dir")
+    games_edit.add_argument("--mod-extensions")
+    games_edit.add_argument("--link-prefix")
 
     open_parser = sub.add_parser("open")
     open_parser.add_argument("target", choices=["source", "game"])
@@ -279,6 +381,8 @@ def run_cli(argv: List[str] | None = None) -> int:
         return _run_presets(args, cfg)
     if args.cmd == "settings":
         return _run_settings(args, cfg)
+    if args.cmd == "games":
+        return _run_games(args, cfg)
     if args.cmd == "open":
         return _run_open(args, cfg)
     if args.cmd == "broken":

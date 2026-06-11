@@ -34,13 +34,24 @@ from .mods import (
     toggle_mods_by_indexes,
 )
 from .presets import (
-    delete_presets_by_indexes,
+    delete_presets_by_names,
     presets_records,
     presets_view,
     save_preset_from_installed,
-    toggle_presets_by_indexes,
+    toggle_presets_by_names,
 )
-from .storage import load_config, save_config
+from .storage import (
+    GAME_PROFILE_KEYS,
+    active_game_profile,
+    create_game_profile,
+    delete_game_profile,
+    game_abbreviation,
+    load_config,
+    normalize_game_profiles,
+    save_config,
+    set_active_game_profile,
+    update_game_profile,
+)
 from .workers import WorkerPool, _run_import_batch, _run_save_settings
 
 
@@ -72,14 +83,98 @@ class _Var:
 
 if QtCore is not None:
 
-    class ModTableModel(QtCore.QAbstractTableModel):
-        HEADERS = ("Mod", "Label", "Last managed")
+    def _accent_color() -> QtGui.QColor:
+        app = QtWidgets.QApplication.instance()
+        color = app.palette().color(QtGui.QPalette.Highlight) if app else QtGui.QColor("#2563eb")
+        return color if color.isValid() else QtGui.QColor("#2563eb")
 
-        def __init__(self, parent=None):
+
+    def _color_luminance(color: QtGui.QColor) -> float:
+        r, g, b = color.redF(), color.greenF(), color.blueF()
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+    def _is_dark_palette(palette: QtGui.QPalette) -> bool:
+        return _color_luminance(palette.color(QtGui.QPalette.Window)) < 0.45
+
+
+    def _readable_on(color: QtGui.QColor) -> QtGui.QColor:
+        return QtGui.QColor("#000000") if _color_luminance(color) > 0.58 else QtGui.QColor("#ffffff")
+
+
+    def _fixed_theme_palette(mode: str, source: QtGui.QPalette) -> QtGui.QPalette:
+        accent = source.color(QtGui.QPalette.Highlight)
+        if not accent.isValid():
+            accent = QtGui.QColor("#2563eb")
+        if mode == "system":
+            return QtGui.QPalette(source)
+        dark = mode == "dark"
+        palette = QtGui.QPalette()
+        colors = {
+            QtGui.QPalette.Window: "#202124" if dark else "#f8fafc",
+            QtGui.QPalette.WindowText: "#f8fafc" if dark else "#111827",
+            QtGui.QPalette.Base: "#111827" if dark else "#ffffff",
+            QtGui.QPalette.AlternateBase: "#1f2937" if dark else "#eef2f7",
+            QtGui.QPalette.Text: "#f8fafc" if dark else "#111827",
+            QtGui.QPalette.Button: "#2b2f36" if dark else "#f1f5f9",
+            QtGui.QPalette.ButtonText: "#f8fafc" if dark else "#111827",
+            QtGui.QPalette.ToolTipBase: "#111827" if dark else "#ffffff",
+            QtGui.QPalette.ToolTipText: "#f8fafc" if dark else "#111827",
+        }
+        for role, value in colors.items():
+            palette.setColor(role, QtGui.QColor(value))
+        palette.setColor(QtGui.QPalette.Highlight, accent)
+        palette.setColor(QtGui.QPalette.HighlightedText, _readable_on(accent))
+        return palette
+
+
+    def _check_icon(color: str | QtGui.QColor, size: int = 18, transparent: bool = False) -> QtGui.QIcon:
+        pixmap = QtGui.QPixmap(size, size)
+        pixmap.fill(QtCore.Qt.transparent)
+        if not transparent:
+            painter = QtGui.QPainter(pixmap)
+            painter.setRenderHint(QtGui.QPainter.Antialiasing)
+            pen = QtGui.QPen(QtGui.QColor(color), max(2.0, size * 0.14), QtCore.Qt.SolidLine, QtCore.Qt.RoundCap, QtCore.Qt.RoundJoin)
+            painter.setPen(pen)
+            path = QtGui.QPainterPath()
+            path.moveTo(size * 0.22, size * 0.50)
+            path.lineTo(size * 0.43, size * 0.72)
+            path.lineTo(size * 0.78, size * 0.28)
+            painter.drawPath(path)
+            painter.end()
+        return QtGui.QIcon(pixmap)
+
+
+    def _sort_direction_icon(descending: bool, color: QtGui.QColor, size: int = 18) -> QtGui.QIcon:
+        pixmap = QtGui.QPixmap(size, size)
+        pixmap.fill(QtCore.Qt.transparent)
+        painter = QtGui.QPainter(pixmap)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        painter.setPen(QtGui.QPen(color, 2.2, QtCore.Qt.SolidLine, QtCore.Qt.RoundCap, QtCore.Qt.RoundJoin))
+        x = size // 2
+        if descending:
+            painter.drawLine(x, 4, x, size - 5)
+            painter.drawLine(x, size - 5, x - 5, size - 10)
+            painter.drawLine(x, size - 5, x + 5, size - 10)
+        else:
+            painter.drawLine(x, size - 4, x, 5)
+            painter.drawLine(x, 5, x - 5, 10)
+            painter.drawLine(x, 5, x + 5, 10)
+        painter.end()
+        return QtGui.QIcon(pixmap)
+
+
+    class ModTableModel(QtCore.QAbstractTableModel):
+        HEADERS = ("", "Name", "Label", "Last managed")
+
+        def __init__(self, accent_color: QtGui.QColor | None = None, parent=None):
             super().__init__(parent)
             self.mods: list[ModItem] = []
             self.labels: dict[str, str] = {}
             self.records: dict[str, dict] = {}
+            accent = accent_color or _accent_color()
+            self._installed_icon = _check_icon(accent)
+            self._empty_icon = _check_icon(accent, transparent=True)
 
         def set_data(self, mods: list[ModItem], labels: dict, records: dict) -> None:
             self.beginResetModel()
@@ -107,16 +202,18 @@ if QtCore is not None:
             last = self.records.get(mod.name, {}).get("last_managed") or "-"
             if role == QtCore.Qt.UserRole:
                 return mod
+            if role == QtCore.Qt.DecorationRole and index.column() == 0:
+                return self._installed_icon if mod.installed else self._empty_icon
+            if role == QtCore.Qt.TextAlignmentRole and index.column() == 0:
+                return QtCore.Qt.AlignCenter
             if role == QtCore.Qt.DisplayRole:
                 if index.column() == 0:
-                    return ("[installed] " if mod.installed else "") + mod.name
+                    return ""
                 if index.column() == 1:
+                    return mod.name
+                if index.column() == 2:
                     return label
                 return last
-            if role == QtCore.Qt.FontRole and mod.installed:
-                font = QtGui.QFont()
-                font.setBold(True)
-                return font
             return None
 
 
@@ -128,12 +225,16 @@ if QtCore is not None:
             self.presets: dict[str, list[str]] = {}
             self.keys: list[str] = []
             self.records: dict[str, dict] = {}
+            self.installed: set[str] = set()
+            self._active_icon = self._state_icon(True)
+            self._inactive_icon = self._state_icon(False)
 
-        def set_data(self, presets: dict, keys: list[str], records: dict) -> None:
+        def set_data(self, presets: dict, keys: list[str], records: dict, installed: set[str] | None = None) -> None:
             self.beginResetModel()
             self.presets = dict(presets or {})
             self.keys = list(keys or [])
             self.records = dict(records or {})
+            self.installed = set(installed or set())
             self.endResetModel()
 
         def rowCount(self, parent=QtCore.QModelIndex()) -> int:
@@ -148,12 +249,41 @@ if QtCore is not None:
             return None
 
         def data(self, index, role=QtCore.Qt.DisplayRole):
-            if not index.isValid() or role != QtCore.Qt.DisplayRole:
+            if not index.isValid():
                 return None
             name = self.keys[index.row()]
+            mods = self.presets.get(name, [])
+            active = bool(mods) and all(mod_name in self.installed for mod_name in mods)
+            if role == QtCore.Qt.UserRole and index.column() == 1:
+                return "active" if active else "inactive"
+            if role == QtCore.Qt.DecorationRole and index.column() == 1:
+                return self._active_icon if active else self._inactive_icon
+            if role == QtCore.Qt.TextAlignmentRole and index.column() == 1:
+                return QtCore.Qt.AlignCenter
+            if role != QtCore.Qt.DisplayRole:
+                return None
             rec = self.records.get(name, {})
-            values = (name, rec.get("state") or "-", str(len(self.presets.get(name, []))), rec.get("last_managed") or "-")
+            values = (name, "", str(len(mods)), rec.get("last_managed") or "-")
             return values[index.column()]
+
+        def _state_icon(self, active: bool) -> QtGui.QIcon:
+            pixmap = QtGui.QPixmap(18, 18)
+            pixmap.fill(QtCore.Qt.transparent)
+            painter = QtGui.QPainter(pixmap)
+            painter.setRenderHint(QtGui.QPainter.Antialiasing)
+            pen = QtGui.QPen(QtGui.QColor("#16a34a" if active else "#dc2626"), 2.6, QtCore.Qt.SolidLine, QtCore.Qt.RoundCap, QtCore.Qt.RoundJoin)
+            painter.setPen(pen)
+            if active:
+                path = QtGui.QPainterPath()
+                path.moveTo(4, 9)
+                path.lineTo(8, 13)
+                path.lineTo(14, 5)
+                painter.drawPath(path)
+            else:
+                painter.drawLine(5, 5, 13, 13)
+                painter.drawLine(13, 5, 5, 13)
+            painter.end()
+            return QtGui.QIcon(pixmap)
 
 
     class BrokenTableModel(QtCore.QAbstractTableModel):
@@ -191,9 +321,12 @@ if QtCore is not None:
 
 
     class TileDelegate(QtWidgets.QStyledItemDelegate):
-        def __init__(self, cfg: dict, parent=None):
+        def __init__(self, cfg: dict, accent_color: QtGui.QColor | None = None, dark_theme: bool = False, parent=None):
             super().__init__(parent)
             self.cfg = cfg
+            self.accent_color = QtGui.QColor(accent_color or _accent_color())
+            self.badge_foreground = _readable_on(self.accent_color)
+            self.dark_theme = dark_theme
             self._pixmaps: dict[tuple[str, int], QtGui.QPixmap] = {}
 
         def paint(self, painter, option, index) -> None:
@@ -202,39 +335,149 @@ if QtCore is not None:
             label = index.model().labels.get(mod.name, "-")
             selected = bool(option.state & QtWidgets.QStyle.State_Selected)
             rect = option.rect.adjusted(6, 6, -6, -6)
-            bg = QtGui.QColor("#dbeafe" if selected else "#ffffff")
-            painter.setPen(QtGui.QPen(QtGui.QColor("#94a3b8")))
-            painter.setBrush(bg)
-            painter.drawRoundedRect(rect, 6, 6)
+            self._draw_acrylic_card(painter, rect, selected)
 
             image_rect = QtCore.QRect(rect.left() + 8, rect.top() + 8, rect.width() - 16, max(48, rect.width() - 18))
             pixmap = self._pixmap_for(mod, image_rect.size())
             if pixmap.isNull():
-                painter.fillRect(image_rect, QtGui.QColor("#e2e8f0"))
-                painter.setPen(QtGui.QColor("#64748b"))
+                painter.setPen(QtCore.Qt.NoPen)
+                painter.setBrush(QtGui.QColor(30, 41, 59, 155) if self.dark_theme else QtGui.QColor(226, 232, 240, 150))
+                painter.drawRoundedRect(image_rect, 5, 5)
+                painter.setPen(QtGui.QColor("#cbd5e1") if self.dark_theme else QtGui.QColor("#64748b"))
                 painter.drawText(image_rect, QtCore.Qt.AlignCenter, "No image")
             else:
+                painter.save()
+                clip = QtGui.QPainterPath()
+                clip.addRoundedRect(QtCore.QRectF(image_rect), 5, 5)
+                painter.setClipPath(clip)
                 painter.drawPixmap(image_rect, pixmap)
+                painter.restore()
 
+            accent = self.accent_color
+            foreground = self.badge_foreground
             if mod.installed:
-                badge = QtCore.QRect(rect.left() + 12, rect.top() + 12, 72, 22)
-                painter.setBrush(QtGui.QColor("#16a34a"))
-                painter.setPen(QtCore.Qt.NoPen)
-                painter.drawRoundedRect(badge, 4, 4)
-                painter.setPen(QtGui.QColor("#ffffff"))
-                painter.drawText(badge, QtCore.Qt.AlignCenter, "Installed")
+                badge = QtCore.QRect(rect.left() + 12, rect.top() + 12, 28, 24)
+                self._draw_badge(painter, badge, accent)
+                self._draw_badge_check(painter, badge, foreground)
+            label_badge_text = self._label_badge_text(label)
+            if label_badge_text:
+                metrics = painter.fontMetrics()
+                badge = self._label_badge_rect(rect, metrics, label_badge_text)
+                self._draw_badge(painter, badge, accent)
+                painter.setPen(foreground)
+                painter.drawText(badge.adjusted(7, 0, -7, 0), QtCore.Qt.AlignCenter, label_badge_text)
 
-            text_rect = QtCore.QRect(rect.left() + 8, image_rect.bottom() + 8, rect.width() - 16, 44)
-            painter.setPen(QtGui.QColor("#0f172a"))
-            painter.drawText(text_rect, QtCore.Qt.TextWordWrap | QtCore.Qt.AlignTop, mod.name)
-            label_rect = QtCore.QRect(rect.left() + 8, text_rect.bottom() + 4, rect.width() - 16, 20)
-            painter.setPen(QtGui.QColor("#475569"))
-            painter.drawText(label_rect, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, label)
+            name_badge = self._name_badge_rect(rect, image_rect)
+            self._draw_badge(painter, name_badge, accent)
+            painter.setPen(foreground)
+            painter.drawText(name_badge.adjusted(8, 0, -8, 0), QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft, self._elided_mod_name(painter.fontMetrics(), mod.name, name_badge.width() - 16))
             painter.restore()
+
+        def helpEvent(self, event, view, option, index) -> bool:
+            tooltip = self._tooltip_for_pos(option, index, event.pos())
+            if tooltip:
+                QtWidgets.QToolTip.showText(event.globalPos(), tooltip, view)
+                return True
+            QtWidgets.QToolTip.hideText()
+            return super().helpEvent(event, view, option, index)
 
         def sizeHint(self, option, index):
             size = max(96, int(self.cfg.get("tile_size", 140)))
-            return QtCore.QSize(size + 28, size + 92)
+            return QtCore.QSize(size + 28, size + 58)
+
+        def _draw_acrylic_card(self, painter, rect: QtCore.QRect, selected: bool) -> None:
+            if self.dark_theme:
+                base = QtGui.QColor(30, 64, 175, 170) if selected else QtGui.QColor(30, 41, 59, 188)
+                border = QtGui.QColor(96, 165, 250, 205) if selected else QtGui.QColor(148, 163, 184, 112)
+                shine = QtGui.QColor(255, 255, 255, 42)
+                end = QtGui.QColor(15, 23, 42, 148)
+                shadow = QtGui.QColor(0, 0, 0, 72)
+            else:
+                base = QtGui.QColor(219, 234, 254, 188) if selected else QtGui.QColor(255, 255, 255, 172)
+                border = QtGui.QColor(59, 130, 246, 210) if selected else QtGui.QColor(148, 163, 184, 150)
+                shine = QtGui.QColor(255, 255, 255, 214)
+                end = QtGui.QColor(226, 232, 240, 132)
+                shadow = QtGui.QColor(15, 23, 42, 24)
+            painter.setPen(QtCore.Qt.NoPen)
+            painter.setBrush(shadow)
+            painter.drawRoundedRect(rect.adjusted(0, 2, 0, 2), 8, 8)
+            gradient = QtGui.QLinearGradient(rect.topLeft(), rect.bottomRight())
+            gradient.setColorAt(0, shine)
+            gradient.setColorAt(0.45, base)
+            gradient.setColorAt(1, end)
+            painter.setBrush(gradient)
+            painter.setPen(QtGui.QPen(border))
+            painter.drawRoundedRect(rect, 8, 8)
+            painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 68 if self.dark_theme else 165)))
+            painter.setBrush(QtCore.Qt.NoBrush)
+            painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), 7, 7)
+
+        def _draw_badge(self, painter, rect: QtCore.QRect, color: QtGui.QColor) -> None:
+            painter.setBrush(color)
+            painter.setPen(QtCore.Qt.NoPen)
+            painter.drawRoundedRect(rect, 4, 4)
+
+        def _draw_badge_check(self, painter, rect: QtCore.QRect, color: QtGui.QColor) -> None:
+            painter.setPen(QtGui.QPen(color, 2.8, QtCore.Qt.SolidLine, QtCore.Qt.RoundCap, QtCore.Qt.RoundJoin))
+            path = QtGui.QPainterPath()
+            path.moveTo(rect.left() + 7, rect.top() + 12)
+            path.lineTo(rect.left() + 12, rect.top() + 17)
+            path.lineTo(rect.left() + 21, rect.top() + 7)
+            painter.drawPath(path)
+
+        def _label_badge_text(self, label: str) -> str:
+            label = (label or "").strip()
+            if not label or label == "-":
+                return ""
+            return label[:8]
+
+        def _elided_mod_name(self, metrics: QtGui.QFontMetrics, name: str, width: int) -> str:
+            return metrics.elidedText(str(name or ""), QtCore.Qt.ElideRight, max(1, width))
+
+        def _content_rect(self, option) -> QtCore.QRect:
+            return option.rect.adjusted(6, 6, -6, -6)
+
+        def _image_rect(self, rect: QtCore.QRect) -> QtCore.QRect:
+            return QtCore.QRect(rect.left() + 8, rect.top() + 8, rect.width() - 16, max(48, rect.width() - 18))
+
+        def _label_badge_rect(self, rect: QtCore.QRect, metrics: QtGui.QFontMetrics, text: str) -> QtCore.QRect:
+            badge_width = min(rect.width() - 24, max(34, metrics.horizontalAdvance(text) + 14))
+            return QtCore.QRect(rect.right() - 12 - badge_width, rect.top() + 12, badge_width, 24)
+
+        def _name_badge_rect(self, rect: QtCore.QRect, image_rect: QtCore.QRect) -> QtCore.QRect:
+            return QtCore.QRect(rect.left() + 8, image_rect.bottom() + 8, rect.width() - 16, 24)
+
+        def _tooltip_for_pos(self, option, index, pos: QtCore.QPoint) -> str:
+            mod = index.data(QtCore.Qt.UserRole)
+            if mod is None:
+                return ""
+            metrics = QtGui.QFontMetrics(option.font)
+            rect = self._content_rect(option)
+            image_rect = self._image_rect(rect)
+            label = (index.model().labels.get(mod.name, "") or "").strip()
+            label_badge_text = self._label_badge_text(label)
+            if label_badge_text:
+                label_badge = self._label_badge_rect(rect, metrics, label_badge_text)
+                if label_badge.contains(pos) and label != label_badge_text:
+                    return label
+            name_badge = self._name_badge_rect(rect, image_rect)
+            if name_badge.contains(pos):
+                elided = self._elided_mod_name(metrics, mod.name, name_badge.width() - 16)
+                if elided != mod.name:
+                    return mod.name
+            return ""
+
+        def _label_for_pos(self, option, index, pos: QtCore.QPoint) -> str:
+            mod = index.data(QtCore.Qt.UserRole)
+            if mod is None:
+                return ""
+            label = (index.model().labels.get(mod.name, "") or "").strip()
+            label_badge_text = self._label_badge_text(label)
+            if not label_badge_text:
+                return ""
+            rect = self._content_rect(option)
+            metrics = QtGui.QFontMetrics(option.font)
+            return label if self._label_badge_rect(rect, metrics, label_badge_text).contains(pos) else ""
 
         def _pixmap_for(self, mod: ModItem, size: QtCore.QSize) -> QtGui.QPixmap:
             key = (mod.name, max(size.width(), size.height()))
@@ -296,7 +539,8 @@ if QtCore is not None:
         def __init__(self):
             super().__init__()
             self.setWindowTitle("Mod Manager")
-            self.cfg = load_config()
+            self.cfg = normalize_game_profiles(load_config())
+            self._init_theme()
             self.resize(max(880, int(self.cfg.get("window_width", 1200))), max(560, int(self.cfg.get("window_height", 750))))
             self.setMinimumSize(880, 560)
             self.setAcceptDrops(True)
@@ -306,7 +550,7 @@ if QtCore is not None:
             self.search_var = _Var("")
             self.label_filter_var = _Var("")
             self.label_edit_var = _Var("")
-            self.order_var = _Var(self.cfg.get("order_var", "Default"))
+            self.order_var = _Var(self._mod_order_label_from_config())
             self.mod_view_mode = _Var(self.cfg.get("mod_view_mode", "list"))
             self.status_var = _Var("")
             self.setting_vars: dict[str, _Var] = {}
@@ -319,7 +563,7 @@ if QtCore is not None:
             self.busy = False
             self.action_widgets: list[QtWidgets.QWidget] = []
             self.mod_selection_widgets: list[QtWidgets.QWidget] = []
-            self.mod_sort_key = self.cfg.get("mod_sort_key", "d")
+            self.mod_sort_key = self._mod_order_options().get(self.order_var.get(), self._normalize_mod_sort_key(self.cfg.get("mod_sort_key", "default")))
             self.mod_sort_reverse = bool(self.cfg.get("mod_sort_reverse", False))
             self.preset_sort_key = self.cfg.get("preset_sort_key", "name")
             self.preset_sort_reverse = bool(self.cfg.get("preset_sort_reverse", False))
@@ -339,6 +583,25 @@ if QtCore is not None:
             self._pool.shutdown()
             super().closeEvent(event)
 
+        def changeEvent(self, event) -> None:
+            super().changeEvent(event)
+
+        def _init_theme(self) -> None:
+            app = QtWidgets.QApplication.instance()
+            mode = str(self.cfg.get("gui_theme", "system") or "system").lower()
+            if mode not in {"system", "light", "dark"}:
+                mode = "system"
+            source = QtGui.QPalette(app.palette() if app else self.palette())
+            palette = _fixed_theme_palette(mode, source)
+            if app:
+                app.setPalette(palette)
+            self.setPalette(palette)
+            self._theme_mode = mode
+            self._theme_is_dark = _is_dark_palette(palette)
+            accent = palette.color(QtGui.QPalette.Highlight)
+            self._theme_accent = accent if accent.isValid() else QtGui.QColor("#2563eb")
+            self._theme_button_text = palette.color(QtGui.QPalette.ButtonText)
+
         def eventFilter(self, obj, event):
             if self._is_mod_drop_target(obj):
                 if event.type() in (QtCore.QEvent.DragEnter, QtCore.QEvent.DragMove) and event.mimeData().hasUrls():
@@ -351,6 +614,13 @@ if QtCore is not None:
                         event.acceptProposedAction()
                         return True
             if event.type() == QtCore.QEvent.MouseButtonPress:
+                tiles_view = getattr(self, "tiles_view", None)
+                if tiles_view is not None and obj is tiles_view.viewport() and event.button() == QtCore.Qt.LeftButton:
+                    label = self._tile_label_at_position(event.position().toPoint())
+                    if label:
+                        self._toggle_label_filter(label)
+                        event.accept()
+                        return True
                 if event.button() == QtCore.Qt.XButton1:
                     return self._nav_back() == "break"
                 if event.button() == QtCore.Qt.XButton2:
@@ -389,17 +659,68 @@ if QtCore is not None:
             return None
 
         def _build(self) -> None:
+            self.games_page = QtWidgets.QWidget()
             self.mods_tab = QtWidgets.QWidget()
             self.setCentralWidget(self.mods_tab)
             self.statusBar().showMessage("")
+            self._apply_button_style()
             self._build_menu()
+            self._build_games_page()
             self._build_mods()
             self._build_presets()
             self._build_settings()
             self._build_broken()
+            self._show_start_page()
+
+        def _apply_button_style(self) -> None:
+            if self._theme_is_dark:
+                normal_bg = "rgba(255, 255, 255, 28)"
+                hover_bg = "rgba(255, 255, 255, 48)"
+                pressed_bg = "rgba(255, 255, 255, 64)"
+                border = "rgba(255, 255, 255, 72)"
+                hover_border = "rgba(255, 255, 255, 112)"
+                disabled_bg = "rgba(255, 255, 255, 14)"
+                disabled_border = "rgba(255, 255, 255, 32)"
+            else:
+                normal_bg = "rgba(255, 255, 255, 42)"
+                hover_bg = "rgba(255, 255, 255, 72)"
+                pressed_bg = "rgba(148, 163, 184, 72)"
+                border = "rgba(148, 163, 184, 92)"
+                hover_border = "rgba(148, 163, 184, 132)"
+                disabled_bg = "rgba(148, 163, 184, 24)"
+                disabled_border = "rgba(148, 163, 184, 42)"
+            accent = self._theme_accent
+            self.setStyleSheet(
+                f"""
+                QPushButton[variant="acrylic"] {{
+                    background-color: {normal_bg};
+                    border: 1px solid {border};
+                    border-radius: 6px;
+                    padding: 4px 8px;
+                }}
+                QPushButton[variant="acrylic"]:hover {{
+                    background-color: {hover_bg};
+                    border-color: {hover_border};
+                }}
+                QPushButton[variant="acrylic"]:pressed {{
+                    background-color: {pressed_bg};
+                }}
+                QPushButton[variant="acrylic"]:checked {{
+                    background-color: rgba({accent.red()}, {accent.green()}, {accent.blue()}, 84);
+                    border-color: rgba({accent.red()}, {accent.green()}, {accent.blue()}, 150);
+                }}
+                QPushButton[variant="acrylic"]:disabled {{
+                    background-color: {disabled_bg};
+                    border-color: {disabled_border};
+                }}
+                """
+            )
 
         def _build_menu(self) -> None:
             manage = self.menuBar().addMenu("Manage")
+            games = manage.addAction(self._icon("menu"), "Games")
+            games.setToolTip("Manage game profiles")
+            games.triggered.connect(self._open_games_dialog)
             presets = manage.addAction(self._icon("save"), "Presets")
             presets.setToolTip("Open presets")
             presets.triggered.connect(self._open_presets_dialog)
@@ -409,6 +730,38 @@ if QtCore is not None:
             broken = manage.addAction(self._icon("delete"), "Broken links")
             broken.setToolTip("Open broken links cleanup")
             broken.triggered.connect(self._open_broken_dialog)
+
+        def _build_games_page(self) -> None:
+            layout = QtWidgets.QVBoxLayout(self.games_page)
+            layout.setContentsMargins(28, 28, 28, 28)
+            title = QtWidgets.QLabel("Choose game")
+            title_font = title.font()
+            title_font.setPointSize(max(title_font.pointSize() + 6, 16))
+            title_font.setBold(True)
+            title.setFont(title_font)
+            layout.addWidget(title)
+            self.games_list = QtWidgets.QListWidget()
+            self.games_list.itemDoubleClicked.connect(lambda item: self._select_game_profile(item.data(QtCore.Qt.UserRole)))
+            layout.addWidget(self.games_list, 1)
+            actions = QtWidgets.QHBoxLayout()
+            actions.addWidget(self._icon_button("Select", self._select_highlighted_game, "Select highlighted game", "toggle", icon_only=False))
+            actions.addWidget(self._icon_button("Add game", self._add_game_profile, "Add a game profile", "add", icon_only=False))
+            actions.addWidget(self._icon_button("Edit", self._edit_highlighted_game, "Edit highlighted game profile", "open", icon_only=False))
+            actions.addStretch(1)
+            layout.addLayout(actions)
+
+            self.games_dialog = self._dialog("Games", 820, 560)
+            dialog_layout = QtWidgets.QVBoxLayout(self.games_dialog)
+            self.games_dialog_list = QtWidgets.QListWidget()
+            self.games_dialog_list.itemDoubleClicked.connect(lambda item: self._select_game_profile(item.data(QtCore.Qt.UserRole)))
+            dialog_layout.addWidget(self.games_dialog_list, 1)
+            dialog_actions = QtWidgets.QHBoxLayout()
+            dialog_actions.addWidget(self._icon_button("Select", self._select_highlighted_game_dialog, "Select highlighted game", "toggle", icon_only=False))
+            dialog_actions.addWidget(self._icon_button("Add", self._add_game_profile, "Add a game profile", "add", icon_only=False))
+            dialog_actions.addWidget(self._icon_button("Edit", self._edit_highlighted_game_dialog, "Edit highlighted game profile", "open", icon_only=False))
+            dialog_actions.addWidget(self._icon_button("Delete", self._delete_highlighted_game_dialog, "Delete highlighted game profile", "delete", icon_only=False))
+            dialog_actions.addStretch(1)
+            dialog_layout.addLayout(dialog_actions)
 
         def _dialog(self, title: str, width: int = 760, height: int = 520) -> QtWidgets.QDialog:
             dialog = QtWidgets.QDialog(self)
@@ -436,8 +789,158 @@ if QtCore is not None:
             self.refresh_broken()
             self._show_dialog(self.broken_dialog)
 
+        def _open_games_dialog(self) -> None:
+            self._refresh_games_lists()
+            self._show_dialog(self.games_dialog)
+
+        def _show_start_page(self) -> None:
+            self._refresh_games_lists()
+            if active_game_profile(self.cfg):
+                self._set_main_page(self.mods_tab)
+                self._update_game_button()
+            else:
+                self._set_main_page(self.games_page)
+
+        def _set_main_page(self, widget: QtWidgets.QWidget) -> None:
+            if self.centralWidget() is widget:
+                return
+            if self.centralWidget() is not None:
+                self.takeCentralWidget()
+            self.setCentralWidget(widget)
+
+        def _update_game_button(self) -> None:
+            profile = active_game_profile(self.cfg)
+            if not profile:
+                self.game_button.setText("??")
+                self.game_button.setToolTip("Choose game")
+                return
+            abbr = game_abbreviation(profile.get("name", ""))
+            self.game_button.setText(abbr)
+            self.game_button.setToolTip(f"{profile.get('name', 'Game')} - manage game profiles")
+
+        def _refresh_games_lists(self) -> None:
+            profiles = self.cfg.get("game_profiles", []) or []
+            active_id = self.cfg.get("active_game_profile_id", "")
+            for list_widget in [getattr(self, "games_list", None), getattr(self, "games_dialog_list", None)]:
+                if list_widget is None:
+                    continue
+                list_widget.clear()
+                for profile in profiles:
+                    mark = " *" if profile.get("id") == active_id else ""
+                    item = QtWidgets.QListWidgetItem(f"{game_abbreviation(profile.get('name', ''))}  {profile.get('name', 'Game')}{mark}")
+                    item.setData(QtCore.Qt.UserRole, profile.get("id", ""))
+                    list_widget.addItem(item)
+                if list_widget.count():
+                    list_widget.setCurrentRow(0)
+            self._update_game_button()
+
+        def _highlighted_game_id(self, list_widget: QtWidgets.QListWidget) -> str:
+            item = list_widget.currentItem()
+            return str(item.data(QtCore.Qt.UserRole) or "") if item else ""
+
+        def _select_highlighted_game(self) -> None:
+            self._select_game_profile(self._highlighted_game_id(self.games_list))
+
+        def _select_highlighted_game_dialog(self) -> None:
+            self._select_game_profile(self._highlighted_game_id(self.games_dialog_list))
+
+        def _edit_highlighted_game(self) -> None:
+            self._edit_game_profile(self._highlighted_game_id(self.games_list))
+
+        def _edit_highlighted_game_dialog(self) -> None:
+            self._edit_game_profile(self._highlighted_game_id(self.games_dialog_list))
+
+        def _delete_highlighted_game_dialog(self) -> None:
+            profile_id = self._highlighted_game_id(self.games_dialog_list)
+            if not profile_id:
+                return
+            if QtWidgets.QMessageBox.question(self, "Delete game", "Delete selected game profile?") != QtWidgets.QMessageBox.Yes:
+                return
+            if delete_game_profile(self.cfg, profile_id):
+                save_config(self.cfg)
+                self.cfg = load_config()
+                self._refresh_games_lists()
+                self._show_start_page()
+                self.refresh_all()
+
+        def _select_game_profile(self, profile_id: str) -> None:
+            if not profile_id:
+                return
+            if set_active_game_profile(self.cfg, profile_id):
+                save_config(self.cfg)
+                self.cfg = load_config()
+                self.tile_delegate.cfg = self.cfg
+                self._refresh_games_lists()
+                self._set_main_page(self.mods_tab)
+                self.refresh_all()
+                self._close_dialog(self.games_dialog)
+
+        def _add_game_profile(self) -> None:
+            values = self._game_profile_values()
+            if not values:
+                return
+            create_game_profile(values.pop("name"), values, self.cfg)
+            save_config(self.cfg)
+            self.cfg = load_config()
+            self.tile_delegate.cfg = self.cfg
+            self._refresh_games_lists()
+            self._set_main_page(self.mods_tab)
+            self.refresh_all()
+
+        def _edit_game_profile(self, profile_id: str) -> None:
+            profile = next((p for p in self.cfg.get("game_profiles", []) if p.get("id") == profile_id), None)
+            if not profile:
+                return
+            values = self._game_profile_values(profile)
+            if not values:
+                return
+            update_game_profile(self.cfg, profile_id, values)
+            save_config(self.cfg)
+            self.cfg = load_config()
+            self.tile_delegate.cfg = self.cfg
+            self._refresh_games_lists()
+            self.refresh_all()
+
+        def _game_profile_values(self, profile: dict | None = None) -> dict | None:
+            profile = profile or {}
+            dialog = QtWidgets.QDialog(self)
+            dialog.setWindowTitle("Game profile")
+            layout = QtWidgets.QFormLayout(dialog)
+            widgets: dict[str, QtWidgets.QLineEdit] = {}
+            fields = [("name", "Game name"), *[(key, key) for key in GAME_PROFILE_KEYS]]
+            for key, label in fields:
+                edit = QtWidgets.QLineEdit(str(profile.get(key, "")))
+                edit.setMinimumWidth(420)
+                widgets[key] = edit
+                row = QtWidgets.QHBoxLayout()
+                row.addWidget(edit, 1)
+                if key in {"game_mods_dir", "mods_source_dir"}:
+                    browse = QtWidgets.QPushButton("")
+                    browse.setIcon(self._icon("folder"))
+                    browse.setToolTip(f"Browse for {key}")
+                    browse.clicked.connect(lambda _checked=False, e=edit, k=key: self._browse_game_profile_path(e, k))
+                    row.addWidget(browse)
+                layout.addRow(label, row)
+            buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Save | QtWidgets.QDialogButtonBox.Cancel)
+            buttons.accepted.connect(dialog.accept)
+            buttons.rejected.connect(dialog.reject)
+            layout.addRow(buttons)
+            if dialog.exec() != QtWidgets.QDialog.Accepted:
+                return None
+            values = {key: widget.text().strip() for key, widget in widgets.items()}
+            if not values["name"]:
+                QtWidgets.QMessageBox.critical(self, "Game profile", "Enter game name.")
+                return None
+            return values
+
+        def _browse_game_profile_path(self, edit: QtWidgets.QLineEdit, key: str) -> None:
+            path = QtWidgets.QFileDialog.getExistingDirectory(self, key)
+            if path:
+                edit.setText(path)
+
         def _button(self, text: str, command: Callable, tooltip: str = ""):
             button = QtWidgets.QPushButton(text)
+            button.setProperty("variant", "acrylic")
             button.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
             button.clicked.connect(command)
             if tooltip:
@@ -470,6 +973,7 @@ if QtCore is not None:
 
         def _icon_button(self, text: str, command: Callable, tooltip: str, icon: str, icon_only: bool = True):
             button = QtWidgets.QPushButton("" if icon_only else text)
+            button.setProperty("variant", "acrylic")
             button.setIcon(self._icon(icon))
             button.setIconSize(QtCore.QSize(18, 18))
             button.setAccessibleName(text)
@@ -491,9 +995,39 @@ if QtCore is not None:
             button.setCheckable(True)
             button.setChecked(checked)
 
+        def _mod_order_options(self) -> dict[str, str]:
+            return {
+                "Default": "default",
+                "Created date": "created_date",
+                "Last managed": "last_managed",
+                "Label": "label",
+                "Name": "name",
+                "Installed": "installed",
+            }
+
+        def _normalize_mod_sort_key(self, key: str) -> str:
+            aliases = {"d": "default", "Default": "default", "Default (name without prefix)": "default", "Created date": "created_date", "cd": "created_date", "created date": "created_date"}
+            key = aliases.get(key, key)
+            return key if key in set(self._mod_order_options().values()) else "default"
+
+        def _mod_order_label_for_key(self, key: str) -> str:
+            key = self._normalize_mod_sort_key(key)
+            for label, value in self._mod_order_options().items():
+                if value == key:
+                    return label
+            return "Default"
+
+        def _mod_order_label_from_config(self) -> str:
+            key = self._normalize_mod_sort_key(self.cfg.get("mod_sort_key", "default"))
+            if key == "default":
+                key = self._normalize_mod_sort_key(self.cfg.get("order_var", "default"))
+            return self._mod_order_label_for_key(key)
+
         def _build_mods(self) -> None:
             layout = QtWidgets.QVBoxLayout(self.mods_tab)
             top = QtWidgets.QHBoxLayout()
+            self.game_button = self._icon_button("Game", self._open_games_dialog, "Manage and switch game profiles", "menu", icon_only=False)
+            self.game_button.setMinimumWidth(48)
             self.search_box = QtWidgets.QComboBox()
             self.search_box.setEditable(True)
             self.search_box.lineEdit().setPlaceholderText("Search")
@@ -517,22 +1051,31 @@ if QtCore is not None:
             self.manage_button.setText("Menu")
             self.manage_button.setMenu(self.manage_menu)
             self.order_box = QtWidgets.QComboBox()
-            self.order_box.addItems(["Default", "Created date"])
-            self.order_box.setCurrentText(self.order_var.get() if self.order_var.get() in {"Default", "Created date"} else "Default")
-            self.order_box.currentTextChanged.connect(self._set_mod_order)
+            self.order_box.addItems(list(self._mod_order_options().keys()))
+            self.order_box.setCurrentText(self._mod_order_label_for_key(self.mod_sort_key))
+            self.order_box.activated.connect(self._activate_mod_order)
+            self.order_direction_button = QtWidgets.QPushButton("")
+            self.order_direction_button.setProperty("variant", "acrylic")
+            self.order_direction_button.setFixedSize(32, 32)
+            self.order_direction_button.setIconSize(QtCore.QSize(18, 18))
+            self.order_direction_button.clicked.connect(self._toggle_mod_order_direction)
+            self.action_widgets.append(self.order_direction_button)
+            self._update_mod_order_direction_button()
+            top.addWidget(self.game_button)
             top.addWidget(self.search_box, 2)
             top.addWidget(self.label_filter_box, 1)
             top.addWidget(self._icon_button("Search", self._mods_search, "Apply search and label filters", "search"))
             top.addWidget(self._icon_button("Clear", self._mods_clear, "Clear search and label filters", "clear"))
             top.addWidget(QtWidgets.QLabel("Order"))
             top.addWidget(self.order_box)
+            top.addWidget(self.order_direction_button)
             top.addWidget(QtWidgets.QLabel("View"))
             top.addWidget(self.view_list_button)
             top.addWidget(self.view_tiles_button)
             top.addWidget(self.manage_button)
             layout.addLayout(top)
 
-            self.mods_model = ModTableModel(self)
+            self.mods_model = ModTableModel(self._theme_accent, self)
             self.mods_stack = QtWidgets.QStackedWidget()
             self.mods_table = QtWidgets.QTableView()
             self.mods_table.setModel(self.mods_model)
@@ -543,14 +1086,18 @@ if QtCore is not None:
             self.mods_table.viewport().installEventFilter(self)
             mods_header = self.mods_table.horizontalHeader()
             mods_header.setStretchLastSection(False)
-            mods_header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
-            mods_header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
+            mods_header.setSectionsClickable(True)
+            mods_header.setHighlightSections(False)
+            mods_header.sectionClicked.connect(self._sort_mods_by_section)
+            mods_header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
+            mods_header.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
             mods_header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
+            mods_header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeToContents)
             self.mods_table.verticalHeader().setVisible(False)
             self.mods_table.doubleClicked.connect(lambda _idx: self._toggle_selected_mods())
             self.mods_table.selectionModel().selectionChanged.connect(lambda _a, _b: self._on_mod_selection_changed())
 
-            self.tile_delegate = TileDelegate(self.cfg, self)
+            self.tile_delegate = TileDelegate(self.cfg, self._theme_accent, self._theme_is_dark, self)
             self.tiles_view = ModListView()
             self.tiles_view.setModel(self.mods_model)
             self.tiles_view.setItemDelegate(self.tile_delegate)
@@ -636,7 +1183,13 @@ if QtCore is not None:
             self.presets_table.setModel(self.presets_model)
             self.presets_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
             self.presets_table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
-            self.presets_table.horizontalHeader().setStretchLastSection(True)
+            presets_header = self.presets_table.horizontalHeader()
+            presets_header.setStretchLastSection(False)
+            presets_header.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+            presets_header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeToContents)
+            presets_header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
+            presets_header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeToContents)
+            presets_header.setHighlightSections(False)
             self.presets_table.verticalHeader().setVisible(False)
             self.presets_table.doubleClicked.connect(self._toggle_preset_at_index)
             layout.addWidget(self.presets_table)
@@ -665,14 +1218,11 @@ if QtCore is not None:
             form = QtWidgets.QFormLayout(host)
             form.setFieldGrowthPolicy(QtWidgets.QFormLayout.AllNonFixedFieldsGrow)
             keys = [
-                "game_mods_dir",
-                "mods_source_dir",
-                "mod_extensions",
-                "link_prefix",
                 "page_size",
                 "max_mod_name_len",
                 "max_preset_name_len",
                 "max_label_name_len",
+                "gui_theme",
                 "gui_font_family",
                 "gui_font_size",
                 "ui_scale_percent",
@@ -681,6 +1231,10 @@ if QtCore is not None:
                 "tile_size",
             ]
             self.setting_widgets: dict[str, QtWidgets.QWidget] = {}
+            for key in GAME_PROFILE_KEYS:
+                widget = QtWidgets.QLineEdit(str(self.cfg.get(key, "")))
+                widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+                self.setting_widgets[key] = widget
             for key in keys:
                 value = self.cfg.get(key, "")
                 self.setting_vars[key] = _Var(str(value))
@@ -688,6 +1242,10 @@ if QtCore is not None:
                     widget = QtWidgets.QComboBox()
                     widget.addItems(["list", "tiles"])
                     widget.setCurrentText(str(value or "list"))
+                elif key == "gui_theme":
+                    widget = QtWidgets.QComboBox()
+                    widget.addItems(["system", "light", "dark"])
+                    widget.setCurrentText(str(value or "system"))
                 elif key == "gui_font_family":
                     widget = QtWidgets.QComboBox()
                     widget.addItem("")
@@ -768,11 +1326,8 @@ if QtCore is not None:
             return self.mod_page.get(), self.label_filter_var.get(), self.search_var.get(), self._mod_order_mode()
 
         def _mod_order_mode(self) -> str:
-            order = self.order_var.get()
-            if order == "Created date":
-                return "cd"
-            key = self.mod_sort_key or "d"
-            return f"-{key}" if self.mod_sort_reverse and key != "d" else key
+            key = self._normalize_mod_sort_key(self.mod_sort_key)
+            return f"-{key}" if self.mod_sort_reverse else key
 
         def _preset_order_mode(self) -> str:
             key = self.preset_sort_key or "name"
@@ -786,12 +1341,21 @@ if QtCore is not None:
             self._show_mod_view()
 
         def _set_mod_order(self, text: str) -> None:
-            text = text if text in {"Default", "Created date"} else "Default"
+            options = self._mod_order_options()
+            text = text if text in options else "Default"
             self.order_var.set(text)
+            self.mod_sort_key = options[text]
+            self.mod_sort_reverse = False
             self.cfg["order_var"] = text
+            self.cfg["mod_sort_key"] = self.mod_sort_key
+            self.cfg["mod_sort_reverse"] = self.mod_sort_reverse
             self.mod_page.set(1)
             save_config(self.cfg)
+            self._update_mod_order_direction_button()
             self.refresh_mods()
+
+        def _activate_mod_order(self, _index: int) -> None:
+            self._set_mod_order(self.order_box.currentText())
 
         def _on_mod_view_mode_changed(self) -> None:
             self._set_view_mode(self.mod_view_mode.get())
@@ -804,16 +1368,47 @@ if QtCore is not None:
             self._refresh_selected_detail()
 
         def _sort_mods(self, key: str) -> None:
-            if self.mod_sort_key == key:
-                self.mod_sort_reverse = not self.mod_sort_reverse
-            else:
-                self.mod_sort_key = key
-                self.mod_sort_reverse = False
+            key = self._normalize_mod_sort_key(key)
+            self.mod_sort_key = key
+            self.mod_sort_reverse = False
+            self.order_var.set(self._mod_order_label_for_key(self.mod_sort_key))
+            if hasattr(self, "order_box"):
+                blocker = QtCore.QSignalBlocker(self.order_box)
+                try:
+                    self.order_box.setCurrentText(self.order_var.get())
+                finally:
+                    del blocker
             self.cfg["mod_sort_key"] = self.mod_sort_key
             self.cfg["mod_sort_reverse"] = self.mod_sort_reverse
+            self.cfg["order_var"] = self.order_var.get()
             self.mod_page.set(1)
             save_config(self.cfg)
+            self._update_mod_order_direction_button()
             self.refresh_mods()
+
+        def _sort_mods_by_section(self, section: int) -> None:
+            keys = {0: "installed", 1: "name", 2: "label", 3: "last_managed"}
+            key = keys.get(section)
+            if key:
+                self._sort_mods(key)
+
+        def _toggle_mod_order_direction(self) -> None:
+            self.mod_sort_reverse = not self.mod_sort_reverse
+            self.cfg["mod_sort_key"] = self.mod_sort_key
+            self.cfg["mod_sort_reverse"] = self.mod_sort_reverse
+            self.cfg["order_var"] = self._mod_order_label_for_key(self.mod_sort_key)
+            save_config(self.cfg)
+            self._update_mod_order_direction_button()
+            self.mod_page.set(1)
+            self.refresh_mods()
+
+        def _update_mod_order_direction_button(self) -> None:
+            button = getattr(self, "order_direction_button", None)
+            if button is None:
+                return
+            button.setIcon(_sort_direction_icon(self.mod_sort_reverse, self._theme_button_text))
+            button.setAccessibleName("Descending" if self.mod_sort_reverse else "Ascending")
+            button.setToolTip("Sort descending" if self.mod_sort_reverse else "Sort ascending")
 
         def _sort_presets(self, key: str) -> None:
             if self.preset_sort_key == key:
@@ -891,6 +1486,17 @@ if QtCore is not None:
             if not index.isValid() or index.row() >= len(self.current_mods_shown):
                 return ""
             return self.current_mods_shown[index.row()].name
+
+        def _tile_label_at_position(self, pos: QtCore.QPoint) -> str:
+            if not hasattr(self, "tiles_view"):
+                return ""
+            index = self.tiles_view.indexAt(pos)
+            if not index.isValid():
+                return ""
+            option = QtWidgets.QStyleOptionViewItem()
+            option.font = self.tiles_view.font()
+            option.rect = self.tiles_view.visualRect(index)
+            return self.tile_delegate._label_for_pos(option, index, pos)
 
         def _refresh_selected_detail(self) -> None:
             rows = self._selected_rows(self._current_mod_view())
@@ -1179,12 +1785,13 @@ if QtCore is not None:
                 if row < len(self.presets_model.keys)
             ]
             presets, keys, page_keys, page, pages = presets_view(self.cfg, self.preset_page.get(), self._preset_order_mode())
+            installed = {mod.name for mod in list_installed_mods(self.cfg)}
             self.preset_page.set(page)
             selection = self.presets_table.selectionModel()
             blocker = QtCore.QSignalBlocker(selection) if selection else None
             self.presets_table.setUpdatesEnabled(False)
             try:
-                self.presets_model.set_data(presets, page_keys, presets_records())
+                self.presets_model.set_data(presets, page_keys, presets_records(), installed)
                 self.preset_page_label.setText(f"Page {page}/{pages}")
                 if selection:
                     selection.clearSelection()
@@ -1307,7 +1914,7 @@ if QtCore is not None:
             self._run_action("Saving preset...", lambda: save_preset_from_installed(self.cfg, name), done)
 
         def _toggle_selected_presets(self) -> None:
-            indexes = [row + 1 for row in self._selected_rows(self.presets_table)]
+            names = self._selected_preset_names()
             installed = {m.name for m in list_installed_mods(self.cfg)}
 
             def done(result):
@@ -1318,7 +1925,7 @@ if QtCore is not None:
                 self.refresh_presets()
                 self._close_dialog(self.presets_dialog)
 
-            self._run_action("Toggling presets...", lambda: toggle_presets_by_indexes(self.cfg, self.preset_page.get(), indexes, installed), done)
+            self._run_action("Toggling presets...", lambda: toggle_presets_by_names(self.cfg, names, installed), done)
 
         def _toggle_preset_at_index(self, index) -> None:
             if index.isValid() and self.presets_table.selectionModel():
@@ -1329,7 +1936,7 @@ if QtCore is not None:
             self._toggle_selected_presets()
 
         def _delete_selected_presets(self) -> None:
-            indexes = [row + 1 for row in self._selected_rows(self.presets_table)]
+            names = self._selected_preset_names()
 
             def done(result):
                 removed, missing = result
@@ -1338,7 +1945,14 @@ if QtCore is not None:
                 self.statusBar().showMessage(message)
                 self.refresh_presets()
 
-            self._run_action("Deleting presets...", lambda: delete_presets_by_indexes(self.cfg, self.preset_page.get(), indexes), done)
+            self._run_action("Deleting presets...", lambda: delete_presets_by_names(names), done)
+
+        def _selected_preset_names(self) -> list[str]:
+            return [
+                self.presets_model.keys[row]
+                for row in self._selected_rows(self.presets_table)
+                if row < len(self.presets_model.keys)
+            ]
 
         def _browse_setting(self, key: str) -> None:
             path = QtWidgets.QFileDialog.getExistingDirectory(self, key)
@@ -1348,6 +1962,7 @@ if QtCore is not None:
                     widget.setText(path)
 
         def _save_settings(self) -> None:
+            old_theme = str(self.cfg.get("gui_theme", "system") or "system")
             values = {}
             for key, widget in self.setting_widgets.items():
                 if isinstance(widget, QtWidgets.QComboBox):
@@ -1359,8 +1974,9 @@ if QtCore is not None:
                 self.cfg = new_cfg
                 self.mod_view_mode.set(self.cfg.get("mod_view_mode", "list"))
                 self._show_mod_view()
-                self.status_var.set("Settings saved.")
-                self.statusBar().showMessage("Settings saved.")
+                message = "Settings saved. Restart required to apply theme." if old_theme != str(self.cfg.get("gui_theme", "system") or "system") else "Settings saved."
+                self.status_var.set(message)
+                self.statusBar().showMessage(message)
                 self.refresh_all()
                 self._close_dialog(self.settings_dialog)
 

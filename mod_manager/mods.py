@@ -12,6 +12,16 @@ from .cli_utils import filter_items_by_query, page_slice, paginate, sort_items
 
 IMAGE_EXTENSIONS = {".png", ".gif", ".jpg", ".jpeg", ".bmp", ".webp", ".ppm", ".pgm"}
 
+def _name_without_prefix(name: str, link_prefix: str) -> str:
+    if not link_prefix:
+        return name.lower()
+    path = Path(name)
+    if path.stem.endswith(link_prefix):
+        return (path.stem[: -len(link_prefix)] + path.suffix).lower()
+    if name.startswith(link_prefix):
+        return name[len(link_prefix):].lower()
+    return name.lower()
+
 def parse_extensions(cfg: Dict) -> Tuple[bool, List[str]]:
     exts_raw = (cfg.get("mod_extensions") or "").strip()
     if not exts_raw:
@@ -133,7 +143,10 @@ def mods_view(cfg: Dict, page: int, label_filter: str, search_query: str, order_
         items = [m for m in items if (labels.get(m.name) or "").lower() == lf]
     reverse = order_mode.startswith("-")
     mode = order_mode[1:] if reverse else order_mode
-    if mode == "name":
+    if mode in {"d", "default"}:
+        link_prefix = (cfg.get("link_prefix") or "").strip()
+        items = sorted(items, key=lambda m: ((not m.is_dir), _name_without_prefix(m.name, link_prefix)), reverse=reverse)
+    elif mode == "name":
         items = sorted(items, key=lambda m: m.name.lower(), reverse=reverse)
     elif mode == "installed":
         items = sorted(items, key=lambda m: (m.installed, m.name.lower()), reverse=reverse)
@@ -141,6 +154,8 @@ def mods_view(cfg: Dict, page: int, label_filter: str, search_query: str, order_
         items = sorted(items, key=lambda m: ((labels.get(m.name) or "").lower(), m.name.lower()), reverse=reverse)
     elif mode == "last_managed":
         items = sorted(items, key=lambda m: (records.get(m.name, {}).get("last_managed") or "", m.name.lower()), reverse=reverse)
+    elif mode in {"cd", "created_date", "created date"}:
+        items = sorted(items, key=lambda m: (m.src.stat().st_ctime if m.src.exists() else 0, m.name.lower()), reverse=reverse)
     else:
         items = sort_items(items, order_mode)
     page, pages = paginate(len(items) if items else 1, page, cfg)

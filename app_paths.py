@@ -14,12 +14,15 @@ else:
 CONFIG_PATH = APP_DIR / "config.json"
 PRESETS_PATH = APP_DIR / "presets.json"
 LABELS_PATH = APP_DIR / "labels.json"
+PROFILE_DATA_DIR = APP_DIR / "profiles"
 
 PAGE_SIZE = 10
 
 PRINT_SIZE = 48
 
 DEFAULT_CONFIG = {
+    "active_game_profile_id": "",
+    "game_profiles": [],
     "mods_source_dir": "",
     "game_mods_dir": "",
     "mod_extensions": "",
@@ -29,6 +32,7 @@ DEFAULT_CONFIG = {
     "max_preset_name_len": 28,
     "max_label_name_len": 12,
     "button_size_percent": 100,
+    "gui_theme": "system",
     "gui_font_family": "",
     "gui_font_size": 10,
     "placeholder_image_col_width": 56,
