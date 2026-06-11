@@ -238,10 +238,21 @@ python mod-manager.py presets delete 2,3
 --max-preset-name-len <n>
 --max-label-name-len <n>
 --gui-theme system|light|dark
+--gui-accent-color-mode system|custom
+--gui-accent-color <#rrggbb>
+--gui-text-color-mode system|custom
+--gui-text-color <#rrggbb>
 ```
 
 Game-specific paths and extension settings live in `games` profiles. The legacy `settings set --game-mods-dir`, `--mods-source-dir`, and `--mod-extensions` flags still update the active profile for compatibility.
-GUI theme changes are applied on the next application start. The `system` option uses the system theme detected at startup and does not update while the app is running.
+
+The GUI theme, accent color, and text color all apply immediately when saved — no restart needed. While set to `system`, the GUI also follows live OS theme/accent changes without restarting.
+
+The accent color used for highlights, the installed badge, and active buttons follows the system theme by default. Set `--gui-accent-color-mode custom` with `--gui-accent-color <#rrggbb>` to override it with a fixed color.
+
+The general text color (window, button, and tooltip text) also follows the system theme by default. Set `--gui-text-color-mode custom` with `--gui-text-color <#rrggbb>` to override it with a fixed color.
+
+In the GUI, the Settings dialog shows a "Choose" color picker and a live "Theme preview" row for both the accent and text colors. Clicking the preview checkmark or "Aa" badge toggles that color between "system" and "custom" mode.
 
 **Examples:**
 
@@ -249,6 +260,8 @@ GUI theme changes are applied on the next application start. The `system` option
 python mod-manager.py settings show
 python mod-manager.py settings set --page-size 20
 python mod-manager.py settings set --gui-theme dark
+python mod-manager.py settings set --gui-accent-color-mode custom --gui-accent-color "#0582CA"
+python mod-manager.py settings set --gui-text-color-mode custom --gui-text-color "#f8fafc"
 ```
 
 ---

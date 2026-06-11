@@ -102,6 +102,20 @@ if QtCore is not None:
         return QtGui.QColor("#000000") if _color_luminance(color) > 0.58 else QtGui.QColor("#ffffff")
 
 
+    def _custom_accent_color(cfg: dict) -> QtGui.QColor | None:
+        if str(cfg.get("gui_accent_color_mode", "system") or "system").lower() != "custom":
+            return None
+        color = QtGui.QColor(str(cfg.get("gui_accent_color") or ""))
+        return color if color.isValid() else None
+
+
+    def _custom_text_color(cfg: dict) -> QtGui.QColor | None:
+        if str(cfg.get("gui_text_color_mode", "system") or "system").lower() != "custom":
+            return None
+        color = QtGui.QColor(str(cfg.get("gui_text_color") or ""))
+        return color if color.isValid() else None
+
+
     def _fixed_theme_palette(mode: str, source: QtGui.QPalette) -> QtGui.QPalette:
         accent = source.color(QtGui.QPalette.Highlight)
         if not accent.isValid():
@@ -540,6 +554,7 @@ if QtCore is not None:
             super().__init__()
             self.setWindowTitle("Mod Manager")
             self.cfg = normalize_game_profiles(load_config())
+            self._applying_theme = False
             self._init_theme()
             self.resize(max(880, int(self.cfg.get("window_width", 1200))), max(560, int(self.cfg.get("window_height", 750))))
             self.setMinimumSize(880, 560)
@@ -591,8 +606,18 @@ if QtCore is not None:
             mode = str(self.cfg.get("gui_theme", "system") or "system").lower()
             if mode not in {"system", "light", "dark"}:
                 mode = "system"
-            source = QtGui.QPalette(app.palette() if app else self.palette())
+            if not hasattr(self, "_system_palette"):
+                self._system_palette = QtGui.QPalette(app.palette() if app else self.palette())
+            source = QtGui.QPalette(self._system_palette)
             palette = _fixed_theme_palette(mode, source)
+            custom_accent = _custom_accent_color(self.cfg)
+            if custom_accent is not None:
+                palette.setColor(QtGui.QPalette.Highlight, custom_accent)
+                palette.setColor(QtGui.QPalette.HighlightedText, _readable_on(custom_accent))
+            custom_text = _custom_text_color(self.cfg)
+            if custom_text is not None:
+                for role in (QtGui.QPalette.WindowText, QtGui.QPalette.Text, QtGui.QPalette.ButtonText, QtGui.QPalette.ToolTipText):
+                    palette.setColor(role, custom_text)
             if app:
                 app.setPalette(palette)
             self.setPalette(palette)
@@ -601,6 +626,33 @@ if QtCore is not None:
             accent = palette.color(QtGui.QPalette.Highlight)
             self._theme_accent = accent if accent.isValid() else QtGui.QColor("#2563eb")
             self._theme_button_text = palette.color(QtGui.QPalette.ButtonText)
+
+        def _refresh_theme(self) -> None:
+            self._applying_theme = True
+            try:
+                self._init_theme()
+                self._apply_button_style()
+                accent = self._theme_accent
+                self.mods_model._installed_icon = _check_icon(accent)
+                self.mods_model._empty_icon = _check_icon(accent, transparent=True)
+                self.mods_model.layoutChanged.emit()
+                self.tile_delegate.accent_color = QtGui.QColor(accent)
+                self.tile_delegate.badge_foreground = _readable_on(accent)
+                self.tile_delegate.dark_theme = self._theme_is_dark
+                self.tiles_view.viewport().update()
+                self._update_mod_order_direction_button()
+                if hasattr(self, "_settings_form"):
+                    self._update_theme_preview()
+            finally:
+                self._applying_theme = False
+
+        def _on_system_appearance_changed(self, *_args) -> None:
+            if self._applying_theme:
+                return
+            app = QtWidgets.QApplication.instance()
+            if app:
+                self._system_palette = QtGui.QPalette(app.palette())
+            self._refresh_theme()
 
         def eventFilter(self, obj, event):
             if self._is_mod_drop_target(obj):
@@ -631,7 +683,12 @@ if QtCore is not None:
             return super().eventFilter(obj, event)
 
         def _bind_navigation_events(self) -> None:
-            QtWidgets.QApplication.instance().installEventFilter(self)
+            app = QtWidgets.QApplication.instance()
+            app.installEventFilter(self)
+            app.paletteChanged.connect(self._on_system_appearance_changed)
+            style_hints = QtGui.QGuiApplication.styleHints()
+            if hasattr(style_hints, "colorSchemeChanged"):
+                style_hints.colorSchemeChanged.connect(self._on_system_appearance_changed)
             QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Backspace), self, activated=self._nav_back)
             QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Back), self, activated=self._nav_back)
             QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Forward), self, activated=self._nav_forward)
@@ -1223,6 +1280,10 @@ if QtCore is not None:
                 "max_preset_name_len",
                 "max_label_name_len",
                 "gui_theme",
+                "gui_accent_color_mode",
+                "gui_accent_color",
+                "gui_text_color_mode",
+                "gui_text_color",
                 "gui_font_family",
                 "gui_font_size",
                 "ui_scale_percent",
@@ -1246,6 +1307,20 @@ if QtCore is not None:
                     widget = QtWidgets.QComboBox()
                     widget.addItems(["system", "light", "dark"])
                     widget.setCurrentText(str(value or "system"))
+                elif key == "gui_accent_color_mode":
+                    widget = QtWidgets.QComboBox()
+                    widget.addItems(["system", "custom"])
+                    widget.setCurrentText(str(value or "system"))
+                elif key == "gui_accent_color":
+                    widget = QtWidgets.QLineEdit(str(value or "#2563eb"))
+                    widget.setReadOnly(True)
+                elif key == "gui_text_color_mode":
+                    widget = QtWidgets.QComboBox()
+                    widget.addItems(["system", "custom"])
+                    widget.setCurrentText(str(value or "system"))
+                elif key == "gui_text_color":
+                    widget = QtWidgets.QLineEdit(str(value or "#111827"))
+                    widget.setReadOnly(True)
                 elif key == "gui_font_family":
                     widget = QtWidgets.QComboBox()
                     widget.addItem("")
@@ -1261,7 +1336,47 @@ if QtCore is not None:
                 row.addWidget(widget, 1)
                 if key in {"game_mods_dir", "mods_source_dir"}:
                     row.addWidget(self._icon_button("Browse", lambda _checked=False, k=key: self._browse_setting(k), f"Browse for {key}", "folder"))
-                form.addRow(key, row)
+                if key == "gui_accent_color":
+                    row.addWidget(self._icon_button("Choose", self._choose_accent_color, "Choose accent color", "image"))
+                    self.accent_color_row = QtWidgets.QWidget()
+                    self.accent_color_row.setLayout(row)
+                    form.addRow(key, self.accent_color_row)
+                elif key == "gui_text_color":
+                    row.addWidget(self._icon_button("Choose", self._choose_text_color, "Choose text color", "image"))
+                    self.text_color_row = QtWidgets.QWidget()
+                    self.text_color_row.setLayout(row)
+                    form.addRow(key, self.text_color_row)
+                else:
+                    form.addRow(key, row)
+
+            self.accent_preview_badge = QtWidgets.QToolButton()
+            self.accent_preview_badge.setAutoRaise(True)
+            self.accent_preview_badge.setIconSize(QtCore.QSize(22, 22))
+            self.accent_preview_badge.setCursor(QtCore.Qt.PointingHandCursor)
+            self.accent_preview_badge.setToolTip("Click to toggle accent color mode")
+            self.accent_preview_badge.clicked.connect(self._toggle_accent_color_mode)
+            self.accent_preview_button = QtWidgets.QPushButton("Active")
+            self.accent_preview_button.setEnabled(False)
+            self.text_preview_badge = QtWidgets.QToolButton()
+            self.text_preview_badge.setText("Aa")
+            self.text_preview_badge.setAutoRaise(True)
+            self.text_preview_badge.setCursor(QtCore.Qt.PointingHandCursor)
+            self.text_preview_badge.setToolTip("Click to toggle text color mode")
+            self.text_preview_badge.clicked.connect(self._toggle_text_color_mode)
+            preview_row = QtWidgets.QHBoxLayout()
+            preview_row.addWidget(self.accent_preview_badge)
+            preview_row.addWidget(self.accent_preview_button)
+            preview_row.addWidget(self.text_preview_badge)
+            preview_row.addStretch(1)
+            form.addRow("Theme preview", preview_row)
+
+            self._settings_form = form
+            self.setting_widgets["gui_accent_color_mode"].currentTextChanged.connect(self._on_accent_settings_changed)
+            self.setting_widgets["gui_text_color_mode"].currentTextChanged.connect(self._on_text_settings_changed)
+            self._update_accent_color_row_visibility()
+            self._update_text_color_row_visibility()
+            self._update_theme_preview()
+
             form.addRow(self._icon_button("Save settings", self._save_settings, "Save settings", "save", icon_only=False))
             wrapper_layout.addWidget(host)
             wrapper_layout.addStretch(1)
@@ -1968,8 +2083,83 @@ if QtCore is not None:
                 if isinstance(widget, QtWidgets.QLineEdit):
                     widget.setText(path)
 
+        def _choose_accent_color(self) -> None:
+            current = QtGui.QColor(self.setting_widgets["gui_accent_color"].text())
+            if not current.isValid():
+                current = self._theme_accent
+            color = QtWidgets.QColorDialog.getColor(current, self.settings_dialog, "Choose accent color")
+            if color.isValid():
+                self.setting_widgets["gui_accent_color"].setText(color.name())
+                self._update_theme_preview()
+
+        def _on_accent_settings_changed(self, _text: str = "") -> None:
+            self._update_accent_color_row_visibility()
+            self._update_theme_preview()
+
+        def _toggle_accent_color_mode(self) -> None:
+            combo = self.setting_widgets["gui_accent_color_mode"]
+            new_mode = "custom" if combo.currentText() == "system" else "system"
+            combo.setCurrentText(new_mode)
+
+        def _update_accent_color_row_visibility(self) -> None:
+            is_custom = self.setting_widgets["gui_accent_color_mode"].currentText() == "custom"
+            self._settings_form.setRowVisible(self.accent_color_row, is_custom)
+
+        def _settings_accent_color(self) -> QtGui.QColor:
+            if self.setting_widgets["gui_accent_color_mode"].currentText() == "custom":
+                color = QtGui.QColor(self.setting_widgets["gui_accent_color"].text())
+                if color.isValid():
+                    return color
+            return self._theme_accent
+
+        def _choose_text_color(self) -> None:
+            current = QtGui.QColor(self.setting_widgets["gui_text_color"].text())
+            if not current.isValid():
+                current = self._theme_button_text
+            color = QtWidgets.QColorDialog.getColor(current, self.settings_dialog, "Choose text color")
+            if color.isValid():
+                self.setting_widgets["gui_text_color"].setText(color.name())
+                self._update_theme_preview()
+
+        def _on_text_settings_changed(self, _text: str = "") -> None:
+            self._update_text_color_row_visibility()
+            self._update_theme_preview()
+
+        def _toggle_text_color_mode(self) -> None:
+            combo = self.setting_widgets["gui_text_color_mode"]
+            new_mode = "custom" if combo.currentText() == "system" else "system"
+            combo.setCurrentText(new_mode)
+
+        def _update_text_color_row_visibility(self) -> None:
+            is_custom = self.setting_widgets["gui_text_color_mode"].currentText() == "custom"
+            self._settings_form.setRowVisible(self.text_color_row, is_custom)
+
+        def _settings_text_color(self) -> QtGui.QColor:
+            if self.setting_widgets["gui_text_color_mode"].currentText() == "custom":
+                color = QtGui.QColor(self.setting_widgets["gui_text_color"].text())
+                if color.isValid():
+                    return color
+            return self._theme_button_text
+
+        def _update_theme_preview(self) -> None:
+            accent = self._settings_accent_color()
+            text = self._settings_text_color()
+            self.accent_preview_badge.setIcon(_check_icon(accent, size=22))
+            self.accent_preview_button.setStyleSheet(
+                f"background-color: rgba({accent.red()}, {accent.green()}, {accent.blue()}, 84);"
+                f"border: 1px solid rgba({accent.red()}, {accent.green()}, {accent.blue()}, 150);"
+                f"border-radius: 6px; padding: 4px 10px; color: {text.name()};"
+            )
+            self.text_preview_badge.setStyleSheet(f"color: {text.name()}; font-weight: 600;")
+
         def _save_settings(self) -> None:
-            old_theme = str(self.cfg.get("gui_theme", "system") or "system")
+            old_theme_settings = (
+                str(self.cfg.get("gui_theme", "system") or "system"),
+                str(self.cfg.get("gui_accent_color_mode", "system") or "system"),
+                str(self.cfg.get("gui_accent_color") or "#2563eb"),
+                str(self.cfg.get("gui_text_color_mode", "system") or "system"),
+                str(self.cfg.get("gui_text_color") or "#111827"),
+            )
             values = {}
             for key, widget in self.setting_widgets.items():
                 if isinstance(widget, QtWidgets.QComboBox):
@@ -1981,7 +2171,16 @@ if QtCore is not None:
                 self.cfg = new_cfg
                 self.mod_view_mode.set(self.cfg.get("mod_view_mode", "list"))
                 self._show_mod_view()
-                message = "Settings saved. Restart required to apply theme." if old_theme != str(self.cfg.get("gui_theme", "system") or "system") else "Settings saved."
+                new_theme_settings = (
+                    str(self.cfg.get("gui_theme", "system") or "system"),
+                    str(self.cfg.get("gui_accent_color_mode", "system") or "system"),
+                    str(self.cfg.get("gui_accent_color") or "#2563eb"),
+                    str(self.cfg.get("gui_text_color_mode", "system") or "system"),
+                    str(self.cfg.get("gui_text_color") or "#111827"),
+                )
+                if old_theme_settings != new_theme_settings:
+                    self._refresh_theme()
+                message = "Settings saved."
                 self.status_var.set(message)
                 self.statusBar().showMessage(message)
                 self.refresh_all()

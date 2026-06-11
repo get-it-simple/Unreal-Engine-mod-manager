@@ -158,7 +158,7 @@ def _run_settings(args: argparse.Namespace, cfg: Dict) -> int:
             print(f"{key}: {cfg[key]}")
         return 0
     changed = False
-    for key in ["game_mods_dir", "mods_source_dir", "mod_extensions", "page_size", "max_mod_name_len", "max_preset_name_len", "max_label_name_len", "gui_theme"]:
+    for key in ["game_mods_dir", "mods_source_dir", "mod_extensions", "page_size", "max_mod_name_len", "max_preset_name_len", "max_label_name_len", "gui_theme", "gui_accent_color_mode", "gui_accent_color", "gui_text_color_mode", "gui_text_color"]:
         value = getattr(args, key)
         if value is not None:
             cfg[key] = value
@@ -303,6 +303,10 @@ def build_parser() -> argparse.ArgumentParser:
     settings_set.add_argument("--max-preset-name-len", type=int)
     settings_set.add_argument("--max-label-name-len", type=int)
     settings_set.add_argument("--gui-theme", choices=["system", "light", "dark"])
+    settings_set.add_argument("--gui-accent-color-mode", choices=["system", "custom"])
+    settings_set.add_argument("--gui-accent-color")
+    settings_set.add_argument("--gui-text-color-mode", choices=["system", "custom"])
+    settings_set.add_argument("--gui-text-color")
 
     games = sub.add_parser("games")
     games_sub = games.add_subparsers(dest="games_cmd", required=True)

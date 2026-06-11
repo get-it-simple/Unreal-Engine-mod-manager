@@ -41,6 +41,10 @@ class GuiTests(unittest.TestCase):
             "max_label_name_len": 12,
             "button_size_percent": 100,
             "gui_theme": "system",
+            "gui_accent_color_mode": "system",
+            "gui_accent_color": "#2563eb",
+            "gui_text_color_mode": "system",
+            "gui_text_color": "#111827",
             "gui_font_family": "",
             "gui_font_size": 10,
             "placeholder_image_col_width": 56,
@@ -611,7 +615,7 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(self.window.status_var.get(), "Settings saved.")
         self.assertFalse(self.window.settings_dialog.isVisible())
 
-    def test_save_theme_setting_requires_restart_without_restyling(self):
+    def test_save_theme_setting_applies_live_without_restart(self):
         self.window._run_action = self.run_action_inline
         self.window._open_settings_dialog()
         self.window.setting_widgets["gui_theme"].setCurrentText("dark")
@@ -620,8 +624,137 @@ class GuiTests(unittest.TestCase):
             self.window._save_settings()
 
         self.assertEqual(self.window.cfg["gui_theme"], "dark")
-        apply_style.assert_not_called()
-        self.assertEqual(self.window.status_var.get(), "Settings saved. Restart required to apply theme.")
+        apply_style.assert_called_once()
+        self.assertEqual(self.window.status_var.get(), "Settings saved.")
+
+    def test_accent_color_mode_defaults_to_system_with_color_row_hidden(self):
+        self.window._run_action = self.run_action_inline
+        self.window._open_settings_dialog()
+
+        self.assertEqual(self.window.setting_widgets["gui_accent_color_mode"].currentText(), "system")
+        self.assertEqual(self.window.setting_widgets["gui_accent_color"].text(), "#2563eb")
+        self.assertFalse(self.window._settings_form.isRowVisible(self.window.accent_color_row))
+
+    def test_selecting_custom_accent_mode_reveals_color_row_and_updates_preview(self):
+        self.window._run_action = self.run_action_inline
+        self.window._open_settings_dialog()
+
+        self.window.setting_widgets["gui_accent_color_mode"].setCurrentText("custom")
+
+        self.assertTrue(self.window._settings_form.isRowVisible(self.window.accent_color_row))
+        self.assertEqual(self.window._settings_accent_color().name(), "#2563eb")
+
+    def test_choose_accent_color_updates_field_and_preview(self):
+        self.window._run_action = self.run_action_inline
+        self.window._open_settings_dialog()
+        self.window.setting_widgets["gui_accent_color_mode"].setCurrentText("custom")
+
+        with patch("mod_manager.gui.QtWidgets.QColorDialog.getColor", return_value=QtGui.QColor("#ff0000")):
+            self.window._choose_accent_color()
+
+        self.assertEqual(self.window.setting_widgets["gui_accent_color"].text(), "#ff0000")
+        self.assertEqual(self.window._settings_accent_color().name(), "#ff0000")
+        self.assertFalse(self.window.accent_preview_badge.icon().isNull())
+
+    def test_save_custom_accent_color_applies_live(self):
+        self.window._run_action = self.run_action_inline
+        self.window._open_settings_dialog()
+        self.window.setting_widgets["gui_accent_color_mode"].setCurrentText("custom")
+        self.window.setting_widgets["gui_accent_color"].setText("#ff0000")
+
+        with patch("mod_manager.storage.save_config"):
+            self.window._save_settings()
+
+        self.assertEqual(self.window.cfg["gui_accent_color_mode"], "custom")
+        self.assertEqual(self.window.cfg["gui_accent_color"], "#ff0000")
+        self.assertEqual(self.window.status_var.get(), "Settings saved.")
+        self.assertEqual(self.window._theme_accent.name(), "#ff0000")
+
+    def test_clicking_accent_preview_badge_toggles_color_mode(self):
+        self.window._run_action = self.run_action_inline
+        self.window._open_settings_dialog()
+
+        self.assertEqual(self.window.setting_widgets["gui_accent_color_mode"].currentText(), "system")
+        self.assertFalse(self.window._settings_form.isRowVisible(self.window.accent_color_row))
+
+        self.window.accent_preview_badge.click()
+        self.assertEqual(self.window.setting_widgets["gui_accent_color_mode"].currentText(), "custom")
+        self.assertTrue(self.window._settings_form.isRowVisible(self.window.accent_color_row))
+
+        self.window.accent_preview_badge.click()
+        self.assertEqual(self.window.setting_widgets["gui_accent_color_mode"].currentText(), "system")
+        self.assertFalse(self.window._settings_form.isRowVisible(self.window.accent_color_row))
+
+    def test_save_settings_without_accent_change_does_not_require_restart(self):
+        self.window._run_action = self.run_action_inline
+        self.window._open_settings_dialog()
+        self.window.setting_widgets["page_size"].setText("25")
+
+        with patch("mod_manager.storage.save_config"):
+            self.window._save_settings()
+
+        self.assertEqual(self.window.status_var.get(), "Settings saved.")
+
+    def test_text_color_mode_defaults_to_system_with_color_row_hidden(self):
+        self.window._run_action = self.run_action_inline
+        self.window._open_settings_dialog()
+
+        self.assertEqual(self.window.setting_widgets["gui_text_color_mode"].currentText(), "system")
+        self.assertEqual(self.window.setting_widgets["gui_text_color"].text(), "#111827")
+        self.assertFalse(self.window._settings_form.isRowVisible(self.window.text_color_row))
+
+    def test_clicking_text_preview_badge_toggles_color_mode(self):
+        self.window._run_action = self.run_action_inline
+        self.window._open_settings_dialog()
+
+        self.window.text_preview_badge.click()
+        self.assertEqual(self.window.setting_widgets["gui_text_color_mode"].currentText(), "custom")
+        self.assertTrue(self.window._settings_form.isRowVisible(self.window.text_color_row))
+
+        self.window.text_preview_badge.click()
+        self.assertEqual(self.window.setting_widgets["gui_text_color_mode"].currentText(), "system")
+        self.assertFalse(self.window._settings_form.isRowVisible(self.window.text_color_row))
+
+    def test_choose_text_color_updates_field_and_preview(self):
+        self.window._run_action = self.run_action_inline
+        self.window._open_settings_dialog()
+        self.window.setting_widgets["gui_text_color_mode"].setCurrentText("custom")
+
+        with patch("mod_manager.gui.QtWidgets.QColorDialog.getColor", return_value=QtGui.QColor("#00ff00")):
+            self.window._choose_text_color()
+
+        self.assertEqual(self.window.setting_widgets["gui_text_color"].text(), "#00ff00")
+        self.assertEqual(self.window._settings_text_color().name(), "#00ff00")
+        self.assertIn("#00ff00", self.window.text_preview_badge.styleSheet())
+
+    def test_save_custom_text_color_applies_live(self):
+        self.window._run_action = self.run_action_inline
+        self.window._open_settings_dialog()
+        self.window.setting_widgets["gui_text_color_mode"].setCurrentText("custom")
+        self.window.setting_widgets["gui_text_color"].setText("#00ff00")
+
+        with patch("mod_manager.storage.save_config"):
+            self.window._save_settings()
+
+        self.assertEqual(self.window.cfg["gui_text_color_mode"], "custom")
+        self.assertEqual(self.window.cfg["gui_text_color"], "#00ff00")
+        self.assertEqual(self.window.status_var.get(), "Settings saved.")
+        self.assertEqual(self.window._theme_button_text.name(), "#00ff00")
+
+    def test_system_appearance_change_refreshes_theme_when_following_system(self):
+        self.window._run_action = self.run_action_inline
+        with patch.object(self.window, "_apply_button_style") as apply_style:
+            self.window._on_system_appearance_changed()
+
+        apply_style.assert_called_once()
+
+    def test_system_appearance_change_ignored_while_applying_theme(self):
+        self.window._applying_theme = True
+        with patch.object(self.window, "_refresh_theme") as refresh_theme:
+            self.window._on_system_appearance_changed()
+
+        refresh_theme.assert_not_called()
+        self.window._applying_theme = False
 
     def test_preset_and_broken_actions_dispatch_selected_rows(self):
         self.window._run_action = self.run_action_inline
