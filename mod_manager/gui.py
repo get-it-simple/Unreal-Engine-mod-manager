@@ -1344,8 +1344,12 @@ if QtCore is not None:
             options = self._mod_order_options()
             text = text if text in options else "Default"
             self.order_var.set(text)
-            self.mod_sort_key = options[text]
-            self.mod_sort_reverse = False
+            key = options[text]
+            if self.mod_sort_key == key:
+                self.mod_sort_reverse = not self.mod_sort_reverse
+            else:
+                self.mod_sort_key = key
+                self.mod_sort_reverse = False
             self.cfg["order_var"] = text
             self.cfg["mod_sort_key"] = self.mod_sort_key
             self.cfg["mod_sort_reverse"] = self.mod_sort_reverse
@@ -1369,8 +1373,11 @@ if QtCore is not None:
 
         def _sort_mods(self, key: str) -> None:
             key = self._normalize_mod_sort_key(key)
-            self.mod_sort_key = key
-            self.mod_sort_reverse = False
+            if self.mod_sort_key == key:
+                self.mod_sort_reverse = not self.mod_sort_reverse
+            else:
+                self.mod_sort_key = key
+                self.mod_sort_reverse = False
             self.order_var.set(self._mod_order_label_for_key(self.mod_sort_key))
             if hasattr(self, "order_box"):
                 blocker = QtCore.QSignalBlocker(self.order_box)

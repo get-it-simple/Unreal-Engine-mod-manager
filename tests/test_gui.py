@@ -234,6 +234,33 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(self.window._view_args()[3], "default")
         refresh_mods.assert_called_once_with()
 
+    def test_clicking_same_sort_column_twice_toggles_direction(self):
+        with patch.object(self.window, "refresh_mods"), patch("mod_manager.gui.save_config"):
+            self.window._sort_mods_by_section(1)
+
+        self.assertEqual(self.window._view_args()[3], "name")
+
+        with patch.object(self.window, "refresh_mods"), patch("mod_manager.gui.save_config"):
+            self.window._sort_mods_by_section(1)
+
+        self.assertEqual(self.window._view_args()[3], "-name")
+
+        with patch.object(self.window, "refresh_mods"), patch("mod_manager.gui.save_config"):
+            self.window._sort_mods_by_section(1)
+
+        self.assertEqual(self.window._view_args()[3], "name")
+
+    def test_selecting_same_order_option_twice_toggles_direction(self):
+        with patch.object(self.window, "refresh_mods"), patch("mod_manager.gui.save_config"):
+            self.window._set_mod_order("Name")
+
+        self.assertEqual(self.window._view_args()[3], "name")
+
+        with patch.object(self.window, "refresh_mods"), patch("mod_manager.gui.save_config"):
+            self.window._set_mod_order("Name")
+
+        self.assertEqual(self.window._view_args()[3], "-name")
+
     def test_tile_view_uses_same_model_and_label_button_toggles_filter(self):
         with patch("mod_manager.gui.save_config") as save_config:
             self.window._set_view_mode("tiles")
