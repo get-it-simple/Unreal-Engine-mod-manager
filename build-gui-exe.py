@@ -91,8 +91,14 @@ def _build_exe(onefile: bool) -> int:
         "--windowed",
         "--name",
         "mod-manager-gui",
-        "mod-manager-gui.py",
     ]
+    icon_path = Path("assets/icon.ico")
+    if icon_path.exists():
+        cmd += ["--icon", str(icon_path)]
+    assets_dir = Path("assets")
+    if assets_dir.is_dir():
+        cmd += ["--add-data", f"{assets_dir}{os.pathsep}assets"]
+    cmd.append("mod-manager-gui.py")
     return subprocess.call(cmd)
 
 def _parser() -> argparse.ArgumentParser:

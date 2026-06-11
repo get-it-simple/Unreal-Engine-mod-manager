@@ -2123,12 +2123,24 @@ else:
             raise RuntimeError("PySide6 is required for the GUI. Install dependencies with: pip install -r requirements.txt")
 
 
+def _app_icon() -> "QtGui.QIcon | None":
+    icon_path = Path(__file__).resolve().parent.parent / "assets" / "icon.png"
+    if not icon_path.exists():
+        return None
+    return QtGui.QIcon(str(icon_path))
+
+
 def run_gui() -> int:
     if QtWidgets is None:
         print("PySide6 is required for the GUI. Install dependencies with: pip install -r requirements.txt")
         return 2
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    icon = _app_icon()
+    if icon is not None:
+        app.setWindowIcon(icon)
     window = ModManagerGui()
+    if icon is not None:
+        window.setWindowIcon(icon)
     window.show()
     return app.exec()
 

@@ -126,6 +126,8 @@ $env:MOD_MANAGER_ONEFILE="1"
 python build-gui-exe.py
 ```
 
+The `assets/icon.ico` file is used as the executable icon and the `assets/` folder is bundled with `--exe` builds so the GUI window also shows it. Regenerate the icon with `python tools/generate_icon.py` (requires Pillow).
+
 ---
 
 ## CLI Reference
