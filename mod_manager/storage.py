@@ -207,12 +207,17 @@ def _merge_legacy_records(profile_data, legacy_data):
 
 def _load_profile_json(base_path: Path, default):
     path, profile, cfg = _active_profile_context(base_path)
-    if path != base_path and not path.exists() and base_path.exists():
-        data = load_json(base_path, default)
-        save_json(path, data)
-        return data
+    if path == base_path:
+        return load_json(path, default)
+    is_legacy_profile = base_path.exists() and _is_first_profile(profile, cfg)
+    if not path.exists():
+        if is_legacy_profile:
+            data = load_json(base_path, default)
+            save_json(path, data)
+            return data
+        return load_json(path, default)
     data = load_json(path, default)
-    if path != base_path and base_path.exists() and _is_first_profile(profile, cfg):
+    if is_legacy_profile:
         merged = _merge_legacy_records(data, load_json(base_path, default))
         if merged is not data:
             save_json(path, merged)

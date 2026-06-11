@@ -92,6 +92,38 @@ class GameProfileStorageTests(unittest.TestCase):
         self.assertEqual(storage.load_presets(), {"legacy": ["old.pak"]})
         self.assertTrue((self.profile_dir / f"{profile_id}-presets.json").exists())
 
+    def test_new_profile_does_not_inherit_legacy_presets_and_labels(self):
+        storage.save_json(
+            self.config_path,
+            {
+                "game_name": "Cyber Game",
+                "mods_source_dir": "D:/mods/source",
+                "game_mods_dir": "D:/game/mods",
+            },
+        )
+        storage.save_json(self.presets_path, {"legacy": ["old.pak"]})
+        storage.save_json(self.labels_path, {"old.pak": {"label": "legacy", "last_managed": None, "state": "undefined"}})
+
+        cfg = storage.load_config()
+        first = cfg["game_profiles"][0]
+
+        # First (legacy-migrated) profile keeps the legacy presets/labels.
+        self.assertEqual(storage.load_presets(), {"legacy": ["old.pak"]})
+        self.assertEqual(storage.load_labels(), {"old.pak": "legacy"})
+
+        second = storage.create_game_profile("Second Game", {"mods_source_dir": "C", "game_mods_dir": "D"}, cfg)
+        storage.set_active_game_profile(cfg, second["id"])
+        storage.save_config(cfg)
+
+        # New profile starts empty, not a copy of the legacy/first profile's data.
+        self.assertEqual(storage.load_presets(), {})
+        self.assertEqual(storage.load_labels(), {})
+
+        storage.set_active_game_profile(cfg, first["id"])
+        storage.save_config(cfg)
+        self.assertEqual(storage.load_presets(), {"legacy": ["old.pak"]})
+        self.assertEqual(storage.load_labels(), {"old.pak": "legacy"})
+
     def test_legacy_labels_merge_when_profile_file_was_created_empty_first(self):
         storage.save_json(
             self.config_path,
