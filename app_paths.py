@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "Mod Manager"
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.0.3"
 
 if getattr(sys, "frozen", False):
     APP_DIR = Path(sys.executable).resolve().parent

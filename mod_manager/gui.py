@@ -645,6 +645,16 @@ if QtCore is not None:
                 self._update_mod_order_direction_button()
                 if hasattr(self, "_settings_form"):
                     self._update_theme_preview()
+                palette = self.palette()
+                ss = getattr(self, "_theme_stylesheet", "")
+                for attr in ("games_dialog", "presets_dialog", "settings_dialog", "broken_dialog"):
+                    dialog = getattr(self, attr, None)
+                    if dialog:
+                        if ss:
+                            dialog.setStyleSheet(ss)
+                        dialog.setPalette(palette)
+                        dialog.update()
+                self.update()
             finally:
                 self._applying_theme = False
 
@@ -733,47 +743,137 @@ if QtCore is not None:
 
         def _apply_button_style(self) -> None:
             if self._theme_is_dark:
-                normal_bg = "rgba(255, 255, 255, 28)"
-                hover_bg = "rgba(255, 255, 255, 48)"
-                pressed_bg = "rgba(255, 255, 255, 64)"
-                border = "rgba(255, 255, 255, 72)"
-                hover_border = "rgba(255, 255, 255, 112)"
-                disabled_bg = "rgba(255, 255, 255, 14)"
-                disabled_border = "rgba(255, 255, 255, 32)"
+                window_bg = "#202124"
+                normal_bg = "rgba(255, 255, 255, 22)"
+                hover_bg = "rgba(255, 255, 255, 38)"
+                pressed_bg = "rgba(255, 255, 255, 55)"
+                disabled_bg = "rgba(255, 255, 255, 10)"
+                btn_text = "#f2f2f5"
+                input_bg = "#2d2d30"
+                input_border = "#3f3f42"
+                input_focus_border = "#6b6a7c"
+                input_text = "#f2f2f5"
+                combo_bg = "#626071"
+                combo_hover_bg = "#716f82"
+                combo_focus_bg = "#78758a"
+                combo_list_bg = "#2d2d30"
+                combo_list_border = "#56565c"
+                menu_bg = "#2d2d30"
+                menu_border = "#3f3f42"
+                menu_selected_bg = "#626071"
             else:
-                normal_bg = "rgba(255, 255, 255, 42)"
-                hover_bg = "rgba(255, 255, 255, 72)"
-                pressed_bg = "rgba(148, 163, 184, 72)"
-                border = "rgba(148, 163, 184, 92)"
-                hover_border = "rgba(148, 163, 184, 132)"
-                disabled_bg = "rgba(148, 163, 184, 24)"
-                disabled_border = "rgba(148, 163, 184, 42)"
+                window_bg = "#f8fafc"
+                normal_bg = "rgba(0, 0, 0, 35)"
+                hover_bg = "rgba(0, 0, 0, 55)"
+                pressed_bg = "rgba(0, 0, 0, 75)"
+                disabled_bg = "rgba(0, 0, 0, 15)"
+                btn_text = "#111827"
+                input_bg = "#f4f4f5"
+                input_border = "#d4d4d8"
+                input_focus_border = "#9291a5"
+                input_text = "#111827"
+                combo_bg = "#e4e4e7"
+                combo_hover_bg = "#d4d4d8"
+                combo_focus_bg = "#c4c4ca"
+                combo_list_bg = "#ffffff"
+                combo_list_border = "#d4d4d8"
+                menu_bg = "#ffffff"
+                menu_border = "#d4d4d8"
+                menu_selected_bg = "#e4e4e7"
             accent = self._theme_accent
-            self.setStyleSheet(
-                f"""
+            stylesheet = f"""
+                QMainWindow, QDialog {{
+                    background-color: {window_bg};
+                }}
                 QPushButton[variant="acrylic"] {{
                     background-color: {normal_bg};
-                    border: 1px solid {border};
-                    border-radius: 6px;
-                    padding: 4px 8px;
+                    border: none;
+                    border-radius: 8px;
+                    padding: 6px 10px;
+                    color: {btn_text};
                 }}
                 QPushButton[variant="acrylic"]:hover {{
                     background-color: {hover_bg};
-                    border-color: {hover_border};
                 }}
                 QPushButton[variant="acrylic"]:pressed {{
                     background-color: {pressed_bg};
                 }}
                 QPushButton[variant="acrylic"]:checked {{
                     background-color: rgba({accent.red()}, {accent.green()}, {accent.blue()}, 84);
-                    border-color: rgba({accent.red()}, {accent.green()}, {accent.blue()}, 150);
+                    border: 1px solid rgba({accent.red()}, {accent.green()}, {accent.blue()}, 150);
                 }}
                 QPushButton[variant="acrylic"]:disabled {{
                     background-color: {disabled_bg};
-                    border-color: {disabled_border};
                 }}
-                """
-            )
+                QLineEdit {{
+                    background: {input_bg};
+                    border: 1px solid {input_border};
+                    border-radius: 4px;
+                    color: {input_text};
+                    padding: 4px 8px;
+                }}
+                QLineEdit:focus {{
+                    border-color: {input_focus_border};
+                }}
+                QComboBox {{
+                    background: {combo_bg};
+                    border: 0;
+                    border-radius: 7px;
+                    color: {input_text};
+                    padding: 5px 20px 5px 9px;
+                }}
+                QComboBox:hover {{
+                    background: {combo_hover_bg};
+                }}
+                QComboBox:focus {{
+                    background: {combo_focus_bg};
+                }}
+                QComboBox::drop-down {{
+                    border: 0;
+                    width: 18px;
+                }}
+                QComboBox QAbstractItemView {{
+                    background: {combo_list_bg};
+                    border: 1px solid {combo_list_border};
+                    color: {input_text};
+                    selection-background-color: {combo_bg};
+                }}
+                QComboBox QLineEdit {{
+                    background: transparent;
+                    border: none;
+                    border-radius: 0;
+                    padding: 0 2px;
+                    color: {input_text};
+                }}
+                QMenuBar {{
+                    background-color: {window_bg};
+                    color: {btn_text};
+                }}
+                QMenuBar::item {{
+                    padding: 4px 8px;
+                    background: transparent;
+                    border-radius: 4px;
+                }}
+                QMenuBar::item:selected, QMenuBar::item:pressed {{
+                    background: {menu_selected_bg};
+                }}
+                QMenu {{
+                    background: {menu_bg};
+                    border: 1px solid {menu_border};
+                    color: {input_text};
+                    padding: 4px 0;
+                }}
+                QMenu::item {{
+                    padding: 6px 24px 6px 12px;
+                    margin: 0 4px;
+                    border-radius: 4px;
+                }}
+                QMenu::item:selected {{
+                    background: {menu_selected_bg};
+                }}
+            """
+            self._theme_stylesheet = stylesheet
+            self.setStyleSheet(stylesheet)
 
         def _build_menu(self) -> None:
             manage = self.menuBar().addMenu("Manage")
@@ -2169,7 +2269,7 @@ if QtCore is not None:
             self.accent_preview_button.setStyleSheet(
                 f"background-color: rgba({accent.red()}, {accent.green()}, {accent.blue()}, 84);"
                 f"border: 1px solid rgba({accent.red()}, {accent.green()}, {accent.blue()}, 150);"
-                f"border-radius: 6px; padding: 4px 10px; color: {text.name()};"
+                f"border-radius: 8px; padding: 6px 10px; color: {text.name()};"
             )
             self.text_preview_badge.setStyleSheet(f"color: {text.name()}; font-weight: 600;")
 
