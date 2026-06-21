@@ -16,7 +16,7 @@ except ModuleNotFoundError:
 from app_paths import APP_NAME, APP_VERSION
 
 from .cli_utils import ensure_paths, open_folder, select_in_explorer
-from .dragdrop import read_clipboard_image, read_clipboard_paths
+from .dragdrop import QtWindowsDropTarget, read_clipboard_image, read_clipboard_paths
 from .models import ModItem
 from .mods import (
     add_label_to_mods,
@@ -589,8 +589,28 @@ if QtCore is not None:
             self._poll_timer.timeout.connect(self._poll_workers)
 
             self._build()
+            self._setup_com_drop_targets()
             self._bind_navigation_events()
             self.refresh_all()
+
+        def _setup_com_drop_targets(self) -> None:
+            from .platform_utils import is_windows
+            if not is_windows():
+                return
+
+            def make_callback(viewport):
+                def callback(paths, x, y):
+                    pos = viewport.mapFromGlobal(QtCore.QPoint(x, y))
+                    mod_name = self._mod_name_at_view_position(viewport, pos)
+                    self._handle_mods_drop(paths, target_mod_name=mod_name)
+                return callback
+
+            self._table_drop_target = QtWindowsDropTarget(
+                self.mods_table.viewport(), make_callback(self.mods_table.viewport())
+            )
+            self._tiles_drop_target = QtWindowsDropTarget(
+                self.tiles_view.viewport(), make_callback(self.tiles_view.viewport())
+            )
 
         def closeEvent(self, event) -> None:
             self.cfg["window_width"] = self.width()
@@ -598,6 +618,10 @@ if QtCore is not None:
             self._save_tile_splitter_sizes()
             save_config(self.cfg)
             self._pool.shutdown()
+            for attr in ("_table_drop_target", "_tiles_drop_target"):
+                target = getattr(self, attr, None)
+                if target is not None:
+                    target.disable()
             super().closeEvent(event)
 
         def changeEvent(self, event) -> None:
