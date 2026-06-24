@@ -178,7 +178,8 @@ def mods_view(cfg: Dict, page: int, label_filter: str, search_query: str, order_
     elif mode == "last_managed":
         items = sorted(items, key=lambda m: (records.get(m.name, {}).get("last_managed") or "", m.name.lower()), reverse=reverse)
     elif mode in {"cd", "created_date", "created date"}:
-        items = sorted(items, key=lambda m: (m.src.stat().st_ctime if m.src.exists() else 0, m.name.lower()), reverse=reverse)
+        ctimes = {m.name: (m.src.stat().st_ctime if m.src.exists() else 0) for m in items}
+        items = sorted(items, key=lambda m: (ctimes[m.name], m.name.lower()), reverse=reverse)
     else:
         items = sort_items(items, order_mode)
     page, pages = paginate(len(items) if items else 1, page, cfg)

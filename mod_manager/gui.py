@@ -1444,55 +1444,9 @@ if QtCore is not None:
             for key in keys:
                 value = self.cfg.get(key, "")
                 self.setting_vars[key] = _Var(str(value))
-                if key == "mod_view_mode":
-                    widget = QtWidgets.QComboBox()
-                    widget.addItems(["list", "tiles"])
-                    widget.setCurrentText(str(value or "list"))
-                elif key == "gui_theme":
-                    widget = QtWidgets.QComboBox()
-                    widget.addItems(["system", "light", "dark"])
-                    widget.setCurrentText(str(value or "system"))
-                elif key == "gui_accent_color_mode":
-                    widget = QtWidgets.QComboBox()
-                    widget.addItems(["system", "custom"])
-                    widget.setCurrentText(str(value or "system"))
-                elif key == "gui_accent_color":
-                    widget = QtWidgets.QLineEdit(str(value or "#2563eb"))
-                    widget.setReadOnly(True)
-                elif key == "gui_text_color_mode":
-                    widget = QtWidgets.QComboBox()
-                    widget.addItems(["system", "custom"])
-                    widget.setCurrentText(str(value or "system"))
-                elif key == "gui_text_color":
-                    widget = QtWidgets.QLineEdit(str(value or "#111827"))
-                    widget.setReadOnly(True)
-                elif key == "gui_font_family":
-                    widget = QtWidgets.QComboBox()
-                    widget.addItem("")
-                    widget.addItems(self._system_font_families())
-                    if value and widget.findText(str(value)) < 0:
-                        widget.addItem(str(value))
-                    widget.setCurrentText(str(value or ""))
-                else:
-                    widget = QtWidgets.QLineEdit(str(value))
-                widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+                widget = self._create_setting_widget(key, value)
                 self.setting_widgets[key] = widget
-                row = QtWidgets.QHBoxLayout()
-                row.addWidget(widget, 1)
-                if key in {"game_mods_dir", "mods_source_dir"}:
-                    row.addWidget(self._icon_button("Browse", lambda _checked=False, k=key: self._browse_setting(k), f"Browse for {key}", "folder"))
-                if key == "gui_accent_color":
-                    row.addWidget(self._icon_button("Choose", self._choose_accent_color, "Choose accent color", "image"))
-                    self.accent_color_row = QtWidgets.QWidget()
-                    self.accent_color_row.setLayout(row)
-                    form.addRow(key, self.accent_color_row)
-                elif key == "gui_text_color":
-                    row.addWidget(self._icon_button("Choose", self._choose_text_color, "Choose text color", "image"))
-                    self.text_color_row = QtWidgets.QWidget()
-                    self.text_color_row.setLayout(row)
-                    form.addRow(key, self.text_color_row)
-                else:
-                    form.addRow(key, row)
+                self._add_setting_row(form, key, widget)
 
             self.accent_preview_badge = QtWidgets.QToolButton()
             self.accent_preview_badge.setAutoRaise(True)
@@ -1535,6 +1489,54 @@ if QtCore is not None:
             except TypeError:
                 families = QtGui.QFontDatabase().families()
             return sorted({str(family) for family in families if family}, key=str.lower)
+
+        def _create_setting_widget(self, key: str, value) -> QtWidgets.QWidget:
+            _COMBO_OPTS: dict[str, tuple] = {
+                "mod_view_mode": (["list", "tiles"], "list"),
+                "gui_theme": (["system", "light", "dark"], "system"),
+                "gui_accent_color_mode": (["system", "custom"], "system"),
+                "gui_text_color_mode": (["system", "custom"], "system"),
+            }
+            if key in _COMBO_OPTS:
+                items, default = _COMBO_OPTS[key]
+                widget = QtWidgets.QComboBox()
+                widget.addItems(items)
+                widget.setCurrentText(str(value or default))
+            elif key == "gui_font_family":
+                widget = QtWidgets.QComboBox()
+                widget.addItem("")
+                widget.addItems(self._system_font_families())
+                if value and widget.findText(str(value)) < 0:
+                    widget.addItem(str(value))
+                widget.setCurrentText(str(value or ""))
+            elif key == "gui_accent_color":
+                widget = QtWidgets.QLineEdit(str(value or "#2563eb"))
+                widget.setReadOnly(True)
+            elif key == "gui_text_color":
+                widget = QtWidgets.QLineEdit(str(value or "#111827"))
+                widget.setReadOnly(True)
+            else:
+                widget = QtWidgets.QLineEdit(str(value))
+            widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+            return widget
+
+        def _add_setting_row(self, form: QtWidgets.QFormLayout, key: str, widget: QtWidgets.QWidget) -> None:
+            row = QtWidgets.QHBoxLayout()
+            row.addWidget(widget, 1)
+            if key in {"game_mods_dir", "mods_source_dir"}:
+                row.addWidget(self._icon_button("Browse", lambda _checked=False, k=key: self._browse_setting(k), f"Browse for {key}", "folder"))
+            if key == "gui_accent_color":
+                row.addWidget(self._icon_button("Choose", self._choose_accent_color, "Choose accent color", "image"))
+                self.accent_color_row = QtWidgets.QWidget()
+                self.accent_color_row.setLayout(row)
+                form.addRow(key, self.accent_color_row)
+            elif key == "gui_text_color":
+                row.addWidget(self._icon_button("Choose", self._choose_text_color, "Choose text color", "image"))
+                self.text_color_row = QtWidgets.QWidget()
+                self.text_color_row.setLayout(row)
+                form.addRow(key, self.text_color_row)
+            else:
+                form.addRow(key, row)
 
         def _build_broken(self) -> None:
             self.broken_dialog = self._dialog("Broken links", 760, 520)

@@ -379,25 +379,22 @@ def menu_mods_toggle(cfg: Dict):
                 page = 1
                 continue
             if cmd in ["l+", "l-"]:
-                if len(args) >= 2:
-                    label_name = args[0]
-                    idxs = parse_multi_choice(" ".join(args[1:]))
-                    if not idxs:
-                        last_operation = "Invalid index."
-                        continue
-                    targets = []
-                    for num in idxs:
-                        if 1 <= num <= len(shown):
-                            targets.append(shown[num - 1].name)
-                    if not targets:
-                        last_operation = "Invalid index."
-                        continue
-                    if cmd == "l+":
-                        last_operation = add_label_to_mods(label_name, targets)
-                    else:
-                        last_operation = remove_label_from_mods(label_name, targets)
-                else:
+                if len(args) < 2:
                     last_operation = "Use: /l+ <label> <indexes> or /l- <label> <indexes>"
+                    continue
+                label_name = args[0]
+                idxs = parse_multi_choice(" ".join(args[1:]))
+                if not idxs:
+                    last_operation = "Invalid index."
+                    continue
+                targets = [shown[num - 1].name for num in idxs if 1 <= num <= len(shown)]
+                if not targets:
+                    last_operation = "Invalid index."
+                    continue
+                if cmd == "l+":
+                    last_operation = add_label_to_mods(label_name, targets)
+                else:
+                    last_operation = remove_label_from_mods(label_name, targets)
                 continue
             if cmd in ["order"]:
                 mode = " ".join(args).strip().lower()
