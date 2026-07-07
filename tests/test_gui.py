@@ -182,6 +182,47 @@ class GuiTests(unittest.TestCase):
         self.assertTrue(self.window.broken_dialog.isVisible())
         self.window.broken_dialog.close()
 
+    def test_filter_boxes_use_popup_completion_without_inline_autofill(self):
+        for box in (self.window.search_box, self.window.label_filter_box):
+            self.assertEqual(box.insertPolicy(), QtWidgets.QComboBox.NoInsert)
+            completer = box.completer()
+            self.assertEqual(completer.completionMode(), QtWidgets.QCompleter.PopupCompletion)
+            self.assertEqual(completer.filterMode(), QtCore.Qt.MatchContains)
+            self.assertEqual(completer.caseSensitivity(), QtCore.Qt.CaseInsensitive)
+
+    def test_tab_completes_filter_text_to_available_option(self):
+        line_edit = self.window.search_box.lineEdit()
+        line_edit.setText("bat")
+        event = QtGui.QKeyEvent(QtCore.QEvent.KeyPress, QtCore.Qt.Key_Tab, QtCore.Qt.NoModifier)
+
+        self.assertTrue(self.window.eventFilter(line_edit, event))
+        self.assertEqual(line_edit.text(), "combat.pak")
+
+    def test_tab_without_text_or_match_leaves_input_unchanged(self):
+        line_edit = self.window.search_box.lineEdit()
+        event = QtGui.QKeyEvent(QtCore.QEvent.KeyPress, QtCore.Qt.Key_Tab, QtCore.Qt.NoModifier)
+
+        line_edit.setText("zzz")
+        self.assertFalse(self.window.eventFilter(line_edit, event))
+        self.assertEqual(line_edit.text(), "zzz")
+
+        line_edit.setText("")
+        self.assertFalse(self.window.eventFilter(line_edit, event))
+        self.assertEqual(line_edit.text(), "")
+
+    def test_enter_applies_filter_with_typed_partial_text(self):
+        self.window.search_box.setCurrentText("co")
+        item_count = self.window.search_box.count()
+
+        with patch.object(self.window, "refresh_mods") as refresh_mods:
+            self.window.search_box.lineEdit().returnPressed.emit()
+
+        self.assertEqual(self.window.search_var.get(), "co")
+        self.assertEqual(self.window.search_box.currentText(), "co")
+        self.assertEqual(self.window.search_box.count(), item_count)
+        self.assertEqual(self.window.mod_page.get(), 1)
+        refresh_mods.assert_called_once_with()
+
     def test_view_args_and_clear_search_update_filter_state(self):
         self.window.mod_page.set(3)
         self.window.search_var.set("ui")

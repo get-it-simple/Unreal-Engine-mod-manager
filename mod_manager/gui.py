@@ -690,7 +690,43 @@ if QtCore is not None:
                 self._system_palette = QtGui.QPalette(app.palette())
             self._refresh_theme()
 
+        def _setup_filter_box(self, box: QtWidgets.QComboBox) -> None:
+            box.setInsertPolicy(QtWidgets.QComboBox.NoInsert)
+            completer = box.completer()
+            completer.setCompletionMode(QtWidgets.QCompleter.PopupCompletion)
+            completer.setFilterMode(QtCore.Qt.MatchContains)
+            completer.setCaseSensitivity(QtCore.Qt.CaseInsensitive)
+
+        def _filter_box_for_object(self, obj) -> QtWidgets.QComboBox | None:
+            for box in getattr(self, "filter_boxes", ()):
+                completer = box.completer()
+                if obj is box.lineEdit() or (completer is not None and obj is completer.popup()):
+                    return box
+            return None
+
+        def _complete_filter_box(self, box: QtWidgets.QComboBox) -> bool:
+            completer = box.completer()
+            text = box.lineEdit().text()
+            if completer is None or not text:
+                return False
+            popup = completer.popup()
+            index = popup.currentIndex() if popup is not None else None
+            completion = index.data() if index is not None and index.isValid() else None
+            if not completion:
+                completer.setCompletionPrefix(text)
+                completion = completer.currentCompletion()
+            if not completion:
+                return False
+            box.lineEdit().setText(completion)
+            if popup is not None:
+                popup.hide()
+            return True
+
         def eventFilter(self, obj, event):
+            if event.type() == QtCore.QEvent.KeyPress and event.key() == QtCore.Qt.Key_Tab:
+                box = self._filter_box_for_object(obj)
+                if box is not None and self._complete_filter_box(box):
+                    return True
             if self._is_mod_drop_target(obj):
                 if event.type() in (QtCore.QEvent.DragEnter, QtCore.QEvent.DragMove) and event.mimeData().hasUrls():
                     event.acceptProposedAction()
@@ -1234,6 +1270,9 @@ if QtCore is not None:
             self.label_filter_box.setEditable(True)
             self.label_filter_box.lineEdit().setPlaceholderText("Label")
             self.label_filter_box.lineEdit().returnPressed.connect(self._mods_search)
+            self.filter_boxes = (self.search_box, self.label_filter_box)
+            for box in self.filter_boxes:
+                self._setup_filter_box(box)
             self.view_list_button = self._icon_button("List view", lambda: self._set_view_mode("list"), "Show mods as a list", "list")
             self.view_tiles_button = self._icon_button("Tile view", lambda: self._set_view_mode("tiles"), "Show mods as tiles", "image")
             self._set_icon_button_checked(self.view_list_button, self.mod_view_mode.get() != "tiles")
