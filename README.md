@@ -4,39 +4,9 @@ A symlink-based mod manager for Unreal Engine games. Manages mods as symbolic li
 
 ---
 
-## Features
+<details>
+<summary>Run, Build, Test details</summary>
 
-- Install / uninstall mods via symlinks — no file duplication
-- Game profiles with separate game folders, source folders, presets, labels, and active default selection
-- Presets — save and restore named mod sets
-- Labels — tag and filter mods by category
-- Pagination, search, and ordering
-- Broken link detection and cleanup
-- GUI (PySide6/Qt) and CLI interfaces
-- Drag, drop, paste, or pick mod files/folders in the GUI
-- Optional local artwork for mods
-- List and tile view modes in the GUI
-- Tile view preview images, installed markers, keyboard navigation, and zoom
-- Virtual rendering keeps off-screen mod rows and tiles from being drawn beyond a one-row buffer
-
----
-
-## Requirements
-
-- Python 3.10+
-- [PySide6](https://pypi.org/project/PySide6/) >= 6.7 — Qt 6 bindings for the GUI (LGPL v3)
-- [prompt_toolkit](https://pypi.org/project/prompt_toolkit/) — for interactive CLI tab-completion
-- [PyInstaller](https://pypi.org/project/pyinstaller/) — only needed to build a standalone executable
-
-Install all at once:
-
-```bash
-pip install -r requirements.txt
-```
-
-> **Note:** PySide6 is distributed under the LGPL v3 license. When distributing a built executable, the Qt dynamic libraries must remain replaceable in accordance with the LGPL terms.
-
----
 
 ## Quick Start
 
@@ -52,35 +22,6 @@ python mod-manager.py gui
 ```
 
 > **Windows note:** Directory junctions do not require elevation. For file symlinks, Administrator rights may be needed if the account lacks the *Create symbolic links* privilege — this can be avoided by enabling [Developer Mode](https://learn.microsoft.com/en-us/windows/apps/get-started/enable-your-device-for-development).
-
----
-
-## Data Files
-
-- `config.json` stores application settings.
-- `config.json` stores application settings and game profile definitions.
-- `profiles/<profile-id>-presets.json` stores named mod sets for each game profile.
-- `profiles/<profile-id>-labels.json` stores labels plus last-managed metadata for each game profile.
-- Existing global `presets.json` and `labels.json` remain supported when no game profile exists.
-- `<mods_source_dir>/images` stores optional mod artwork and is not treated as a mod folder.
-
----
-
-## Tests
-
-Run the full test suite with:
-
-```bash
-python tests/run_tests.py --jobs auto
-```
-
-The parallel runner discovers every individual test case in `tests/test_*.py` and runs them across available workers. Use `--jobs 1` for a serial run. The tests cover CLI request parsing and dispatch, the `python mod-manager.py` launcher modes, and core GUI flows with filesystem, dialogs, and link operations patched out.
-
-The standard unittest command is still supported:
-
-```bash
-python -m unittest discover -s tests -p "test_*.py"
-```
 
 ---
 
@@ -129,6 +70,87 @@ python build-gui-exe.py
 The `assets/icon.ico` file is used as the executable icon and the `assets/` folder is bundled with `--exe` builds so the GUI window also shows it. Regenerate the icon with `python tools/generate_icon.py` (requires Pillow).
 
 ---
+
+
+## Tests
+
+Run the full test suite with:
+
+```bash
+python tests/run_tests.py --jobs auto
+```
+
+The parallel runner discovers every individual test case in `tests/test_*.py` and runs them across available workers. Use `--jobs 1` for a serial run. The tests cover CLI request parsing and dispatch, the `python mod-manager.py` launcher modes, and core GUI flows with filesystem, dialogs, and link operations patched out.
+
+The standard unittest command is still supported:
+
+```bash
+python -m unittest discover -s tests -p "test_*.py"
+```
+</details>
+
+<details>
+<summary>Features</summary>
+
+---
+
+- Install / uninstall mods via symlinks — no file duplication
+- Game profiles with separate game folders, source folders, presets, labels, and active default selection
+- Presets — save and restore named mod sets
+- Labels — tag and filter mods by category
+- Pagination, search, and ordering
+- Broken link detection and cleanup
+- GUI (PySide6/Qt) and CLI interfaces
+- Drag, drop, paste, or pick mod files/folders in the GUI
+- Optional local artwork for mods
+- List and tile view modes in the GUI
+- Tile view preview images, installed markers, keyboard navigation, and zoom
+- Virtual rendering keeps off-screen mod rows and tiles from being drawn beyond a one-row buffer
+
+---
+
+</details>
+
+<details>
+<summary>Extra details</summary>
+
+---
+
+<details>
+<summary>Requirements</summary>
+
+- Python 3.10+
+- [PySide6](https://pypi.org/project/PySide6/) >= 6.7 — Qt 6 bindings for the GUI (LGPL v3)
+- [prompt_toolkit](https://pypi.org/project/prompt_toolkit/) — for interactive CLI tab-completion
+- [PyInstaller](https://pypi.org/project/pyinstaller/) — only needed to build a standalone executable
+
+Install all at once:
+
+```bash
+pip install -r requirements.txt
+```
+
+> **Note:** PySide6 is distributed under the LGPL v3 license. When distributing a built executable, the Qt dynamic libraries must remain replaceable in accordance with the LGPL terms.
+</details>
+
+---
+
+<details>
+<summary>Data Files</summary>
+
+
+- `config.json` stores application settings.
+- `config.json` stores application settings and game profile definitions.
+- `profiles/<profile-id>-presets.json` stores named mod sets for each game profile.
+- `profiles/<profile-id>-labels.json` stores labels plus last-managed metadata for each game profile.
+- Existing global `presets.json` and `labels.json` remain supported when no game profile exists.
+- `<mods_source_dir>/images` stores optional mod artwork and is not treated as a mod folder.
+</details>
+
+---
+
+<details>
+<summary>CLI, Extra details</summary>
 
 ## CLI Reference
 
@@ -318,6 +340,9 @@ python mod-manager.py --version
 ```
 
 The GUI window title and the text-UI menu header also display the current app version.
+
+</details>
+</details>
 
 ---
 
