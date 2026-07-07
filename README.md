@@ -106,7 +106,7 @@ python -m unittest discover -s tests -p "test_*.py"
 - Broken link detection and cleanup
 - GUI (PySide6/Qt) and CLI interfaces
 - Drag, drop, paste, or pick mod files/folders in the GUI
-- Optional local artwork for mods
+- Optional local image for mods
 - List and tile view modes in the GUI
 - Tile view preview images, installed markers, keyboard navigation, and zoom
 - Virtual rendering keeps off-screen mod rows and tiles from being drawn beyond a one-row buffer
@@ -148,7 +148,7 @@ pip install -r requirements.txt
 - `profiles/<profile-id>-presets.json` stores named mod sets for each game profile.
 - `profiles/<profile-id>-labels.json` stores labels plus last-managed metadata for each game profile.
 - Existing global `presets.json` and `labels.json` remain supported when no game profile exists.
-- `<mods_source_dir>/images` stores optional mod artwork and is not treated as a mod folder.
+- `<mods_source_dir>/images` stores optional mod image and is not treated as a mod folder.
 </details>
 
 ---
