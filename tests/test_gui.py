@@ -210,6 +210,33 @@ class GuiTests(unittest.TestCase):
         self.assertFalse(self.window.eventFilter(line_edit, event))
         self.assertEqual(line_edit.text(), "")
 
+    def test_label_edit_suggests_available_labels_without_inline_autofill(self):
+        completer = self.window.label_edit.completer()
+
+        self.assertIsNotNone(completer)
+        self.assertEqual(completer.completionMode(), QtWidgets.QCompleter.PopupCompletion)
+        self.assertEqual(completer.filterMode(), QtCore.Qt.MatchContains)
+        self.assertEqual(completer.caseSensitivity(), QtCore.Qt.CaseInsensitive)
+        self.assertEqual(self.window.label_edit_model.stringList(), ["combat"])
+
+    def test_tab_completes_label_edit_to_available_label(self):
+        self.window.label_edit.setText("bat")
+        event = QtGui.QKeyEvent(QtCore.QEvent.KeyPress, QtCore.Qt.Key_Tab, QtCore.Qt.NoModifier)
+
+        self.assertTrue(self.window.eventFilter(self.window.label_edit, event))
+        self.assertEqual(self.window.label_edit.text(), "combat")
+
+    def test_tab_in_label_edit_without_match_leaves_input_unchanged(self):
+        event = QtGui.QKeyEvent(QtCore.QEvent.KeyPress, QtCore.Qt.Key_Tab, QtCore.Qt.NoModifier)
+
+        self.window.label_edit.setText("zzz")
+        self.assertFalse(self.window.eventFilter(self.window.label_edit, event))
+        self.assertEqual(self.window.label_edit.text(), "zzz")
+
+        self.window.label_edit.setText("")
+        self.assertFalse(self.window.eventFilter(self.window.label_edit, event))
+        self.assertEqual(self.window.label_edit.text(), "")
+
     def test_enter_applies_filter_with_typed_partial_text(self):
         self.window.search_box.setCurrentText("co")
         item_count = self.window.search_box.count()

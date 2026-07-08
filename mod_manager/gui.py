@@ -692,21 +692,30 @@ if QtCore is not None:
 
         def _setup_filter_box(self, box: QtWidgets.QComboBox) -> None:
             box.setInsertPolicy(QtWidgets.QComboBox.NoInsert)
-            completer = box.completer()
+            self._setup_completer(box.completer())
+
+        def _setup_completer(self, completer: QtWidgets.QCompleter) -> None:
             completer.setCompletionMode(QtWidgets.QCompleter.PopupCompletion)
             completer.setFilterMode(QtCore.Qt.MatchContains)
             completer.setCaseSensitivity(QtCore.Qt.CaseInsensitive)
 
-        def _filter_box_for_object(self, obj) -> QtWidgets.QComboBox | None:
-            for box in getattr(self, "filter_boxes", ()):
-                completer = box.completer()
-                if obj is box.lineEdit() or (completer is not None and obj is completer.popup()):
-                    return box
+        def _completion_line_edits(self) -> list[QtWidgets.QLineEdit]:
+            edits = [box.lineEdit() for box in getattr(self, "filter_boxes", ())]
+            label_edit = getattr(self, "label_edit", None)
+            if label_edit is not None:
+                edits.append(label_edit)
+            return edits
+
+        def _completion_line_edit_for_object(self, obj) -> QtWidgets.QLineEdit | None:
+            for edit in self._completion_line_edits():
+                completer = edit.completer()
+                if obj is edit or (completer is not None and obj is completer.popup()):
+                    return edit
             return None
 
-        def _complete_filter_box(self, box: QtWidgets.QComboBox) -> bool:
-            completer = box.completer()
-            text = box.lineEdit().text()
+        def _complete_line_edit(self, line_edit: QtWidgets.QLineEdit) -> bool:
+            completer = line_edit.completer()
+            text = line_edit.text()
             if completer is None or not text:
                 return False
             popup = completer.popup()
@@ -717,15 +726,15 @@ if QtCore is not None:
                 completion = completer.currentCompletion()
             if not completion:
                 return False
-            box.lineEdit().setText(completion)
+            line_edit.setText(completion)
             if popup is not None:
                 popup.hide()
             return True
 
         def eventFilter(self, obj, event):
             if event.type() == QtCore.QEvent.KeyPress and event.key() == QtCore.Qt.Key_Tab:
-                box = self._filter_box_for_object(obj)
-                if box is not None and self._complete_filter_box(box):
+                line_edit = self._completion_line_edit_for_object(obj)
+                if line_edit is not None and self._complete_line_edit(line_edit):
                     return True
             if self._is_mod_drop_target(obj):
                 if event.type() in (QtCore.QEvent.DragEnter, QtCore.QEvent.DragMove) and event.mimeData().hasUrls():
@@ -1387,6 +1396,10 @@ if QtCore is not None:
             self.label_edit.setPlaceholderText("Label")
             self.label_edit.setMaximumWidth(160)
             self.label_edit.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+            self.label_edit_model = QtCore.QStringListModel(self.label_edit)
+            label_completer = QtWidgets.QCompleter(self.label_edit_model, self.label_edit)
+            self._setup_completer(label_completer)
+            self.label_edit.setCompleter(label_completer)
             actions.addWidget(self.label_edit)
             actions.addWidget(self._mod_selection_button("Add label", self._add_label_selected, "Add label to selected mods", "add"))
             actions.addWidget(self._mod_selection_button("Remove label", self._remove_label_selected, "Remove label from selected mods", "remove"))
@@ -2077,9 +2090,11 @@ if QtCore is not None:
                 self.search_box.clear()
                 self.search_box.addItems([m.name for m in items])
                 self.search_box.setCurrentText(search)
+                label_values = sorted({v for v in labels.values() if v})
                 self.label_filter_box.clear()
-                self.label_filter_box.addItems(sorted({v for v in labels.values() if v}))
+                self.label_filter_box.addItems(label_values)
                 self.label_filter_box.setCurrentText(label_filter)
+                self.label_edit_model.setStringList(label_values)
                 self._select_mod_names(selected_names)
             finally:
                 del tile_blocker
