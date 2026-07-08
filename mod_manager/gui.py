@@ -2423,7 +2423,7 @@ if QtCore is not None:
                 return
             image = read_clipboard_image()
             if image:
-                mod_name = self._choose_mod_for_image()
+                mod_name = self._single_selected_mod_name() or self._choose_mod_for_image()
                 if mod_name:
                     def done(_result):
                         self._invalidate_mod_image(mod_name)
@@ -2432,7 +2432,11 @@ if QtCore is not None:
                     self._run_action("Importing image...", lambda: import_mod_image(self.cfg, mod_name, image), done)
 
         def _handle_clipboard_paths(self, paths: List[Path]) -> None:
-            self._import_paths(paths)
+            self._import_paths(paths, image_target_name=self._single_selected_mod_name())
+
+        def _single_selected_mod_name(self) -> str:
+            names = self._selected_mod_names()
+            return names[0] if len(names) == 1 else ""
 
         def _import_paths(self, paths: List[Path], image_target_name: str = "") -> None:
             if not ensure_paths(self.cfg):
@@ -2440,9 +2444,13 @@ if QtCore is not None:
             existing = {m.name for m in self.current_mod_items}
             tasks = []
             image_mods = []
+            dropped_mods = {path.name for path in paths if is_mod_file(path, self.cfg)}
             for path in paths:
                 if is_image_file(path):
-                    mod_name = image_target_name or self._choose_mod_for_image(path.stem)
+                    if path.stem in dropped_mods:
+                        mod_name = path.stem
+                    else:
+                        mod_name = image_target_name or self._choose_mod_for_image(path.stem)
                     if mod_name:
                         tasks.append(("image", path, mod_name, False))
                         image_mods.append(mod_name)
@@ -2483,9 +2491,8 @@ if QtCore is not None:
             names = [m.name for m in self.current_mod_items]
             if not names:
                 return ""
-            if default_name in names:
-                return default_name
-            name, ok = QtWidgets.QInputDialog.getItem(self, "Mod image", "Mod", names, 0, False)
+            current = names.index(default_name) if default_name in names else 0
+            name, ok = QtWidgets.QInputDialog.getItem(self, "Mod image", "Mod", names, current, False)
             return name if ok else ""
 
         def _set_mod_image(self) -> None:
