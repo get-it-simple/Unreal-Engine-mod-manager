@@ -1,0 +1,102 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "**.py"
+      - "!tests/**"
+      - "!tools/**"
+      - "requirements.txt"
+      - "assets/**"
+      - ".github/workflows/build.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and release
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+          check-latest: true
+          cache: pip
+
+      - name: Audit dependencies
+        shell: pwsh
+        run: |
+          $before = "${{ github.event.before }}"
+          $base = if ($before -notmatch '^0+$' -and (git cat-file -e $before 2>$null; $LASTEXITCODE -eq 0)) { $before } else { "HEAD~1" }
+          $changed = git diff --name-only $base HEAD
+          if ($changed -notcontains "requirements.txt") {
+            Write-Host "requirements.txt not modified, skipping audit."
+            exit 0
+          }
+          python -m pip install pip-audit
+          pip-audit -r requirements.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          $match = Select-String -Path app_paths.py -Pattern 'APP_VERSION\s*=\s*"([^"]+)"'
+          $version = $match.Matches[0].Groups[1].Value
+          $tag = "v$version"
+          if (git tag -l $tag) {
+            $short = git rev-parse --short HEAD
+            $tag = "v$version-$short"
+          }
+          Add-Content $env:GITHUB_OUTPUT "tag=$tag"
+
+      - name: Collect release notes
+        shell: pwsh
+        run: |
+          $prev = git tag -l "v*" --sort=-creatordate | Select-Object -First 1
+          $range = if ($prev) { "$prev..HEAD" } else { "HEAD" }
+          $repoUrl = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY"
+          $lines = @("## Commits", "")
+          git log $range --no-merges --format="%H%x09%h%x09%s" | ForEach-Object {
+            $sha, $short, $subject = $_ -split "`t", 3
+            $lines += "- [``$short``]($repoUrl/commit/$sha) $subject"
+          }
+          if ($prev) {
+            $lines += ""
+            $lines += "Previous release: [$prev]($repoUrl/releases/tag/$prev)"
+          }
+          $lines | Set-Content notes.md -Encoding utf8
+
+      - name: Build executable
+        run: python build-gui-exe.py --exe --onefile
+
+      - name: Rename artifact
+        shell: pwsh
+        run: Move-Item dist/mod-manager-gui.exe "dist/mod-manager-gui-${{ steps.version.outputs.tag }}.exe"
+
+      - name: Create release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${{ steps.version.outputs.tag }}"
+          "dist/mod-manager-gui-${{ steps.version.outputs.tag }}.exe"
+          --target $env:GITHUB_SHA
+          --title "Mod Manager ${{ steps.version.outputs.tag }}"
+          --notes-file notes.md
