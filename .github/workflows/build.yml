@@ -20,8 +20,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  tests:
+    name: Python unittest
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+          check-latest: true
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run tests
+        run: python tests/run_tests.py --jobs auto
+
   build:
     name: Build and release
+    needs: tests
     runs-on: windows-latest
 
     steps:
@@ -41,7 +63,11 @@ jobs:
         shell: pwsh
         run: |
           $before = "${{ github.event.before }}"
-          $base = if ($before -notmatch '^0+$' -and (git cat-file -e $before 2>$null; $LASTEXITCODE -eq 0)) { $before } else { "HEAD~1" }
+          $base = "HEAD~1"
+          if ($before -notmatch '^0+$') {
+            git cat-file -e $before 2>$null
+            if ($LASTEXITCODE -eq 0) { $base = $before }
+          }
           $changed = git diff --name-only $base HEAD
           if ($changed -notcontains "requirements.txt") {
             Write-Host "requirements.txt not modified, skipping audit."
