@@ -18,6 +18,9 @@ A symlink-based mod manager for Unreal Engine games. Manages mods as symbolic li
 # Optional: enable tab-completion in CLI
 pip install -r requirements.txt
 
+# Prepare archive support (requires internet on the first run)
+python build-gui-exe.py --prepare-only
+
 # Launch interactive text UI
 python mod-manager.py
 
@@ -30,6 +33,11 @@ python mod-manager.py gui
 ---
 
 ## Build GUI Executable
+
+Builds prepare the pinned 7-Zip resources automatically. The first preparation
+requires internet and Windows tar; later builds reuse verified local files.
+To prepare resources without building, run `python build-gui-exe.py --prepare-only`.
+Packaged applications include these resources and work offline.
 
 <details>
 <summary>Onedir app (recommended — faster startup)</summary>

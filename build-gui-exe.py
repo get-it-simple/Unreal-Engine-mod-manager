@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
-import hashlib
-import json
 import os
 import shutil
 import subprocess
 import sys
 import zipfile
 from pathlib import Path
+
+from tools.prepare_build import prepare_archive_backend, verify_archive_backend
 
 REQUIRED_RUNTIME_PACKAGES = {"PySide6": "PySide6>=6.7.0"}
 REQUIRED_EXE_PACKAGES = {"PyInstaller": "pyinstaller>=6.0.0"}
@@ -106,15 +106,8 @@ def _build_exe(onefile: bool) -> int:
 
 
 def _verify_archive_backend() -> bool:
-    root = Path("assets/7zip")
     try:
-        manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-        for name, expected in manifest["files"].items():
-            actual = hashlib.sha256((root / name).read_bytes()).hexdigest()
-            if actual != expected.lower():
-                raise ValueError(f"SHA-256 mismatch: {name}")
-        if not (root / "License.txt").is_file():
-            raise ValueError("7-Zip license is missing")
+        verify_archive_backend(Path.cwd())
     except (OSError, ValueError, KeyError) as exc:
         print(f"Cannot package the archive backend: {exc}")
         return False
@@ -130,10 +123,18 @@ def _parser() -> argparse.ArgumentParser:
     mode.add_argument("--onedir", action="store_true", help="Build an onedir executable.")
     parser.add_argument("--no-clean-before", action="store_true", help="Do not remove old dist artifacts before building.")
     parser.add_argument("--no-clean-after", action="store_true", help="Do not remove build/spec artifacts after building.")
+    parser.add_argument("--prepare-only", action="store_true", help="Download and verify build resources without building an artifact.")
     return parser
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    try:
+        prepare_archive_backend(Path.cwd())
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+        print(f"Cannot prepare the archive backend: {exc}")
+        return 1
+    if args.prepare_only:
+        return 0
     build_exe = args.exe or (not args.pyz and os.environ.get("MOD_MANAGER_BUILD_EXE") == "1")
     onefile = args.onefile or (not args.onedir and os.environ.get("MOD_MANAGER_ONEFILE") == "1")
     if not _verify_archive_backend():

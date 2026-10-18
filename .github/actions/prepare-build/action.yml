@@ -1,0 +1,15 @@
+name: Prepare build dependencies
+description: Restore or download the pinned and verified 7-Zip build resources.
+runs:
+  using: composite
+  steps:
+    - name: Cache 7-Zip
+      uses: actions/cache@v5
+      with:
+        path: |
+          assets/7zip/7z.exe
+          assets/7zip/7z.dll
+        key: ${{ runner.os }}-${{ runner.arch }}-7zip-${{ hashFiles('assets/7zip/manifest.json') }}
+    - name: Prepare archive backend
+      shell: pwsh
+      run: python build-gui-exe.py --prepare-only

@@ -13,3 +13,5 @@ PROJECT_*
 .venv/
 .venv-backup-*/
 .pytest_cache/
+assets/7zip/7z.exe
+assets/7zip/7z.dll
