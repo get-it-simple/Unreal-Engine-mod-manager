@@ -282,6 +282,18 @@ class CliRequestTests(unittest.TestCase):
         saved.assert_called_once_with(self.cfg)
         self.assertIn("Saved.", output)
 
+    def test_settings_set_request_saves_archive_import_defaults(self):
+        with patch("mod_manager.cli.save_config") as save:
+            code, _output = self.run_request([
+                "settings", "set", "--archive-import-mode", "separate",
+                "--archive-preserve-structure", "--import-ignore-extensions", ".txt,.md",
+            ])
+        self.assertEqual(code, 0)
+        saved = save.call_args.args[0]
+        self.assertEqual(saved["archive_import_mode"], "separate")
+        self.assertTrue(saved["archive_preserve_structure"])
+        self.assertEqual(saved["import_ignore_extensions"], ".txt,.md")
+
     def test_settings_set_request_rejects_per_game_flags(self):
         for flag in ("--game-mods-dir", "--mods-source-dir", "--mod-extensions", "--link-prefix"):
             with self.subTest(flag=flag), patch("sys.stderr", io.StringIO()):

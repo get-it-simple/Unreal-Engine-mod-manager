@@ -55,11 +55,13 @@ class QtWindowsDropTarget:
         self._ole32 = None
         self._timer = None
         self.enabled = False
+        self._disposed = False
+        self._ole_initialized = False
         if is_windows():
             QtCore.QTimer.singleShot(tokens.IMMEDIATE_MS, self.enable)
 
     def enable(self) -> None:
-        if self.enabled:
+        if self.enabled or self._disposed:
             return
         try:
             hwnd = int(self.viewport.winId())
@@ -67,6 +69,7 @@ class QtWindowsDropTarget:
             self._ole32 = ole32
 
             hr = ole32.OleInitialize(None)
+            self._ole_initialized = hr in (S_OK, 1)
             if hr not in (S_OK, 1):
                 logger.warning("dragdrop: OleInitialize returned 0x%x", hr & 0xFFFFFFFF)
 
@@ -165,6 +168,7 @@ class QtWindowsDropTarget:
             logger.error("dragdrop: QtWindowsDropTarget.enable failed: %s", exc, exc_info=True)
 
     def disable(self) -> None:
+        self._disposed = True
         if self.enabled and self._hwnd and self._ole32:
             try:
                 self._ole32.RevokeDragDrop(ctypes.c_void_p(self._hwnd))
@@ -174,6 +178,14 @@ class QtWindowsDropTarget:
         if self._timer is not None:
             self._timer.stop()
             self._timer = None
+        if self._ole_initialized and self._ole32:
+            self._ole32.OleUninitialize()
+            self._ole_initialized = False
+        while not self._pending.empty():
+            paths, _x, _y = self._pending.get_nowait()
+            close = getattr(paths, "close", None)
+            if close:
+                close()
 
     def _start_poll(self) -> None:
         timer = QtCore.QTimer()

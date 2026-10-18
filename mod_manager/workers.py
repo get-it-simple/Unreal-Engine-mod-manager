@@ -13,10 +13,17 @@ def _run_import_batch(cfg: dict, tasks: list) -> tuple:
     from .mods import import_mod_file, import_mod_image
     imported, skipped = [], []
     for kind, path, mod_name, replace in tasks:
-        if kind == "image":
+        if kind == "group":
+            from .imports import publish_plan
+
+            ok, msg = publish_plan(cfg, path)
+        elif kind == "image":
             ok, msg = import_mod_image(cfg, mod_name, path)
         else:
-            ok, msg = import_mod_file(cfg, path, replace)
+            if mod_name:
+                ok, msg = import_mod_file(cfg, path, replace, mod_name)
+            else:
+                ok, msg = import_mod_file(cfg, path, replace)
         (imported if ok else skipped).append(msg)
     return imported, skipped
 

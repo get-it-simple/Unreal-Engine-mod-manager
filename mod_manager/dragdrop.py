@@ -9,8 +9,21 @@ from typing import Callable, List
 
 from .platform_utils import is_windows
 from .log import logger
+from .archive_backend import ArchiveError, safe_relative_path
 
 _POLL_MS = 50
+
+
+class TransferredPaths(list):
+    def __init__(self, paths, owner: tempfile.TemporaryDirectory):
+        super().__init__(paths)
+        self.owner = owner
+        self.temporary_root = Path(owner.name)
+
+    def close(self) -> None:
+        if self.owner is not None:
+            self.owner.cleanup()
+            self.owner = None
 
 # COM constants
 S_OK = 0
@@ -145,11 +158,13 @@ def _setup_apis():
 
 
 def _read_hglobal(kernel32, hglobal):
+    size = kernel32.GlobalSize(ctypes.c_void_p(hglobal))
+    if hglobal and size == 0:
+        return b""
     ptr = kernel32.GlobalLock(ctypes.c_void_p(hglobal))
     if not ptr:
         return None
     try:
-        size = kernel32.GlobalSize(ctypes.c_void_p(hglobal))
         return ctypes.string_at(ptr, size)
     finally:
         kernel32.GlobalUnlock(ctypes.c_void_p(hglobal))
@@ -166,7 +181,7 @@ def _read_istream(pstm):
             chunks.append(bytes(buf[:n.value]))
         if hr != S_OK or n.value == 0:
             break
-    return b"".join(chunks) if chunks else None
+    return b"".join(chunks)
 
 
 def _get_data(ole32, pDataObj, cf_format, lindex=-1, tymed=TYMED_HGLOBAL):
@@ -195,52 +210,88 @@ def _extract_virtual(ole32, kernel32, pDataObj, cf_filedesc, cf_filecontents):
     medium = _get_data(ole32, pDataObj, cf_filedesc)
     if medium is None:
         return []
-    data = _read_hglobal(kernel32, medium.hGlobal)
-    ole32.ReleaseStgMedium(ctypes.byref(medium))
+    try:
+        data = _read_hglobal(kernel32, medium.hGlobal)
+    finally:
+        ole32.ReleaseStgMedium(ctypes.byref(medium))
     if not data or len(data) < 4:
         return []
 
     count = ctypes.c_uint.from_buffer_copy(data).value
     desc_size = ctypes.sizeof(FILEDESCRIPTORW)
-    tmpdir = None
-    paths = []
-
-    for i in range(count):
-        off = 4 + i * desc_size
-        if off + desc_size > len(data):
-            break
-        desc = FILEDESCRIPTORW.from_buffer_copy(data[off:off + desc_size])
-        name = desc.cFileName
-        if not name:
-            continue
-
-        # Try HGLOBAL first, then IStream
-        medium = _get_data(ole32, pDataObj, cf_filecontents, lindex=i, tymed=TYMED_HGLOBAL)
-        if medium is not None and medium.tymed == TYMED_HGLOBAL:
-            file_data = _read_hglobal(kernel32, medium.hGlobal)
-            ole32.ReleaseStgMedium(ctypes.byref(medium))
-        else:
-            if medium is not None:
-                ole32.ReleaseStgMedium(ctypes.byref(medium))
-            medium = _get_data(ole32, pDataObj, cf_filecontents, lindex=i, tymed=TYMED_ISTREAM)
-            if medium is None:
+    if count > (len(data) - 4) // desc_size:
+        raise ArchiveError("The transferred archive file list is incomplete.")
+    descriptors = [FILEDESCRIPTORW.from_buffer_copy(data[4 + i * desc_size:4 + (i + 1) * desc_size]) for i in range(count)]
+    relatives = [safe_relative_path(desc.cFileName) for desc in descriptors]
+    if len({path.as_posix().casefold() for path in relatives}) != len(relatives):
+        raise ArchiveError("Duplicate transferred archive paths.")
+    owner = tempfile.TemporaryDirectory(prefix="mods-drop-")
+    root = Path(owner.name)
+    try:
+        for i, (desc, relative) in enumerate(zip(descriptors, relatives)):
+            dest = root / relative
+            if desc.dwFileAttributes & 0x400:
+                raise ArchiveError("Linked transferred files are unsupported.")
+            if desc.dwFileAttributes & 0x10:
+                dest.mkdir(parents=True, exist_ok=True)
                 continue
-            file_data = _read_istream(medium.hGlobal) if medium.tymed == TYMED_ISTREAM else None
-            ole32.ReleaseStgMedium(ctypes.byref(medium))
-
-        if not file_data:
-            continue
-
-        if tmpdir is None:
-            tmpdir = tempfile.mkdtemp(prefix="mods_drop_")
-        dest = Path(tmpdir) / Path(name).name
-        try:
+            medium = _get_data(ole32, pDataObj, cf_filecontents, lindex=i, tymed=TYMED_HGLOBAL)
+            if medium is not None:
+                try:
+                    file_data = _read_hglobal(kernel32, medium.hGlobal) if medium.tymed == TYMED_HGLOBAL else None
+                finally:
+                    ole32.ReleaseStgMedium(ctypes.byref(medium))
+            else:
+                file_data = None
+            if file_data is None:
+                medium = _get_data(ole32, pDataObj, cf_filecontents, lindex=i, tymed=TYMED_ISTREAM)
+                if medium is None:
+                    raise ArchiveError(f"Cannot read transferred file: {relative}")
+                try:
+                    file_data = _read_istream(medium.hGlobal) if medium.tymed == TYMED_ISTREAM else None
+                finally:
+                    ole32.ReleaseStgMedium(ctypes.byref(medium))
+            if file_data is None:
+                raise ArchiveError(f"Cannot read transferred file: {relative}")
+            dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(file_data)
-            paths.append(dest)
-        except Exception as exc:
-            logger.error("dragdrop: write temp file failed: %s", exc)
+        return TransferredPaths(sorted(root.iterdir(), key=lambda path: path.name.casefold()), owner)
+    except Exception:
+        owner.cleanup()
+        raise
 
-    return paths
+
+def read_virtual_clipboard_paths() -> List[Path]:
+    ole32, _shell32, kernel32, user32 = _setup_apis()
+    ole32.OleGetClipboard.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+    ole32.OleGetClipboard.restype = ctypes.c_long
+    ole32.OleUninitialize.argtypes = []
+    ole32.OleUninitialize.restype = None
+    initialized = ole32.OleInitialize(None) in (S_OK, 1)
+    data_object = ctypes.c_void_p()
+    try:
+        if ole32.OleGetClipboard(ctypes.byref(data_object)) != S_OK or not data_object.value:
+            return []
+        descriptors = user32.RegisterClipboardFormatW("FileGroupDescriptorW")
+        contents = user32.RegisterClipboardFormatW("FileContents")
+        return _extract_virtual(ole32, kernel32, data_object, descriptors, contents)
+    finally:
+        if data_object.value:
+            _vtbl_slot(data_object, 2, _REF_T)(data_object)
+        if initialized:
+            ole32.OleUninitialize()
+
+
+def clipboard_has_files() -> bool:
+    if not is_windows():
+        return False
+    user32 = ctypes.windll.user32
+    user32.IsClipboardFormatAvailable.argtypes = [ctypes.c_uint]
+    user32.IsClipboardFormatAvailable.restype = ctypes.c_bool
+    user32.RegisterClipboardFormatW.argtypes = [ctypes.c_wchar_p]
+    user32.RegisterClipboardFormatW.restype = ctypes.c_uint
+    virtual = user32.RegisterClipboardFormatW("FileGroupDescriptorW")
+    return bool(user32.IsClipboardFormatAvailable(CF_HDROP) or user32.IsClipboardFormatAvailable(virtual))
 
 
 def read_clipboard_paths() -> List[Path]:
@@ -262,7 +313,7 @@ def read_clipboard_paths() -> List[Path]:
         shell32.DragQueryFileW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_wchar_p, ctypes.c_uint]
 
         if not user32.IsClipboardFormatAvailable(CF_HDROP):
-            return []
+            return read_virtual_clipboard_paths()
         if not user32.OpenClipboard(None):
             return []
         try:
@@ -361,4 +412,3 @@ def read_clipboard_image() -> Path | None:
     except Exception as exc:
         logger.error("clipboard: read_clipboard_image failed: %s", exc)
         return None
-

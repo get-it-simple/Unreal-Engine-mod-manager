@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import runpy
+import os
+import tempfile
 import unittest
+import zipfile
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 
@@ -83,6 +87,29 @@ class BuildGuiExeTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertIn("pip", call.call_args.args[0])
         self.assertIn("PySide6>=6.7.0", call.call_args.args[0])
+
+    def test_bundled_archive_backend_matches_pinned_hashes(self):
+        module = self.load_build_module()
+        self.assertTrue(module["_verify_archive_backend"]())
+
+    def test_portable_archive_includes_nested_ui_modules_and_archive_backend(self):
+        module = self.load_build_module()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name in ("app_paths.py", "mod-manager-gui.py", "mod_manager/__init__.py", "mod_manager/ui/dialogs/archive_import.py", "assets/7zip/7z.exe", "assets/7zip/7z.dll"):
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("synthetic", encoding="utf-8")
+            previous = Path.cwd()
+            try:
+                os.chdir(root)
+                self.assertEqual(module["_build_pyz"](), 0)
+            finally:
+                os.chdir(previous)
+            with zipfile.ZipFile(root / "dist/mod-manager-gui.pyz") as archive:
+                names = archive.namelist()
+                self.assertIn("mod_manager/ui/dialogs/archive_import.py", names)
+                self.assertIn("assets/7zip/7z.exe", names)
 
 
 if __name__ == "__main__":

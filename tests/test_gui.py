@@ -966,8 +966,8 @@ class GuiTests(unittest.TestCase):
         self.window.current_mod_items = [self.mods[0]]
 
         with patch("mod_manager.ui.app.is_mod_file", side_effect=lambda path, _cfg: path.suffix == ".pak"), patch(
-            "mod_manager.ui.dialogs.prompts.ask_yes_no",
-            return_value=True,
+            "mod_manager.ui.dialogs.prompts.choose_import_conflict",
+            return_value="replace",
         ) as question, patch("mod_manager.ui.app._run_import_batch", return_value=(["combat.pak"], ["new.pak"])) as import_batch, patch.object(
             self.window, "refresh_mods"
         ) as refresh_mods:

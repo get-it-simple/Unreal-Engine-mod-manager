@@ -85,12 +85,39 @@ python build-gui-exe.py --pyz
 - Broken link detection and cleanup
 - GUI (PySide6/Qt) and CLI interfaces
 - Drag, drop, paste, or pick mod files/folders in the GUI
+- Import nested ZIP, 7z and RAR archives, with a manager for choosing separate variants or adding them together
 - Optional local image for mods
 - List and tile view modes in the GUI
 - Tile view preview images, installed markers, keyboard navigation, and zoom
 - Virtual rendering keeps off-screen mod rows and tiles from being drawn beyond a one-row buffer
 
 ---
+
+</details>
+
+<details>
+<summary>Importing archives and mod options</summary>
+
+Drop or paste archive files into the application, or select them with **Import mod files**.
+On Windows, files and nested folders copied or dragged from an archive opened in Explorer are also supported.
+ZIP, 7z and RAR files can contain mods at any folder depth; a separate 7-Zip installation is unnecessary on Windows x64.
+
+One archive with one mod imports automatically using your defaults. Multiple mods or archives open the import manager:
+
+- Switch between archives with **F1, F2, …**; the selected archive's filename appears underneath.
+- **Add files together** creates one mod folder named after the archive. Turn it off to choose individual mods with checkboxes. Configured related file types stay together as one option.
+- **Preserve archive folder structure** keeps the original paths. Without it, files are flattened. Separate mode with preserved structure creates a folder for each selected mod.
+- In separate mode, select a mod and paste an image, or drop an image onto its row. Dropping an image elsewhere in the import window assigns it to the selected mod.
+- **Add** imports the choices across all archives. **Cancel** discards the prepared import. Existing names offer **Replace**, **Keep both** with numbered names, or **Skip**.
+
+Settings → **Import** controls the default mode (together), structure preservation (off), and ignored extensions (initially empty).
+The ignored list accepts comma-separated values such as `.txt,.md` and applies to files, folder contents, and archives during import.
+Explicitly assigned preview images are independent of that filter. Importing never deletes the original archives or source files.
+
+Imported folder mods remain visible even when a profile's file filter contains only `.pak`.
+Folder mods install under their own folder name using the profile's link or copy mode.
+Password-protected archives and archive links are unsupported; errors identify the affected archive.
+Archives inside other archives are not unpacked recursively.
 
 </details>
 
@@ -125,6 +152,7 @@ pip install -r requirements.txt
 - `config.json` stores application settings and game profile definitions.
 - `profiles/<profile-id>-presets.json` stores named mod sets for each game profile.
 - `profiles/<profile-id>-labels.json` stores labels plus last-managed metadata for each game profile.
+- `profiles/<profile-id>-imports.json` records explicitly imported folder mods, scoped to their source directory (`default-imports.json` when no profile is active).
 - `labels.json` also stores the reserved `__favorites__` map, keyed by game profile ID; existing flat label records remain supported.
 - Existing global `presets.json` and label records remain supported when no game profile exists.
 - `<mods_source_dir>/images` stores optional mod image and is not treated as a mod folder.
@@ -154,7 +182,7 @@ All commands follow the pattern: `python mod-manager.py <command> <subcommand> [
 ```
 --game-mods-dir <path>
 --mods-source-dir <path>
---mod-extensions <exts>                       Comma-separated, e.g. .pak,.rar,.utoc
+--mod-extensions <exts>                       Comma-separated, e.g. .pak,.utoc
 --mod-group-extensions <exts>                 Comma-separated, e.g. .pak,.utoc,.ucas
 --mod-recursive-scan / --no-mod-recursive-scan  Scan subfolders of the source directory
 --link-prefix <text>
@@ -264,6 +292,9 @@ python mod-manager.py presets delete 2,3
 --max-preset-name-len <n>
 --max-label-name-len <n>
 --gui-theme system|light|dark
+--archive-import-mode together|separate
+--archive-preserve-structure / --no-archive-preserve-structure
+--import-ignore-extensions <exts>            Comma-separated, e.g. .txt,.md
 --gui-accent-color-mode system|custom
 --gui-accent-color <#rrggbb>
 --gui-text-color-mode system|custom

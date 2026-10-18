@@ -44,5 +44,5 @@ def fail_on_modal_dialogs() -> None:
         return raise_instead
 
     for name in ("show_error", "show_warning", "show_info", "ask_yes_no", "choose_color",
-                 "choose_directory", "choose_files", "choose_open_file"):
+                 "choose_directory", "choose_files", "choose_open_file", "choose_import_conflict"):
         setattr(prompts, name, blocked(name))

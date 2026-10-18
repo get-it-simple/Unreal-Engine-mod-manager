@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -41,7 +43,8 @@ def _build_pyz() -> int:
     out_dir.mkdir(exist_ok=True)
     out_path = out_dir / "mod-manager-gui.pyz"
     files = [Path("app_paths.py"), Path("mod-manager-gui.py")]
-    files.extend(sorted(Path("mod_manager").glob("*.py")))
+    files.extend(sorted(Path("mod_manager").rglob("*.py")))
+    files.extend(path for path in sorted(Path("assets").rglob("*")) if path.is_file())
     with zipfile.ZipFile(out_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("__main__.py", "from mod_manager.gui import run_gui\nraise SystemExit(run_gui())\n")
         for path in files:
@@ -101,6 +104,22 @@ def _build_exe(onefile: bool) -> int:
     cmd.append("mod-manager-gui.py")
     return subprocess.call(cmd)
 
+
+def _verify_archive_backend() -> bool:
+    root = Path("assets/7zip")
+    try:
+        manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+        for name, expected in manifest["files"].items():
+            actual = hashlib.sha256((root / name).read_bytes()).hexdigest()
+            if actual != expected.lower():
+                raise ValueError(f"SHA-256 mismatch: {name}")
+        if not (root / "License.txt").is_file():
+            raise ValueError("7-Zip license is missing")
+    except (OSError, ValueError, KeyError) as exc:
+        print(f"Cannot package the archive backend: {exc}")
+        return False
+    return True
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Build Mod Manager GUI artifacts.")
     artifact = parser.add_mutually_exclusive_group()
@@ -117,6 +136,8 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     build_exe = args.exe or (not args.pyz and os.environ.get("MOD_MANAGER_BUILD_EXE") == "1")
     onefile = args.onefile or (not args.onedir and os.environ.get("MOD_MANAGER_ONEFILE") == "1")
+    if not _verify_archive_backend():
+        return 1
     if not build_exe and not _ensure_packages(REQUIRED_RUNTIME_PACKAGES):
         return 1
     if not args.no_clean_before:

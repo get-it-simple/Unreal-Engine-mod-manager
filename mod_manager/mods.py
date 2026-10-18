@@ -88,13 +88,13 @@ def _link_dest_name(p: Path, link_prefix: str) -> str:
         return p.name
     return p.stem + link_prefix + p.suffix
 
-def _iter_mod_sources(src_dir: Path, recursive: bool, include_folders: bool):
+def _iter_mod_sources(src_dir: Path, recursive: bool, include_folders: bool, imported_folders: set[str] | None = None):
     """Yield (path, is_dir) candidates from src_dir, honoring folder/recursive options."""
     for p in sorted(src_dir.iterdir(), key=lambda x: (x.is_file(), x.name.lower())):
         if p.is_dir():
-            if p.name == "images":
+            if p.name.casefold() == "images" or (p.name.startswith(".mod-import-") and p.name.casefold() not in (imported_folders or set())):
                 continue
-            if include_folders:
+            if include_folders or p.name.casefold() in (imported_folders or set()):
                 yield p, True
             elif recursive:
                 yield from _iter_mod_sources(p, recursive, include_folders)
@@ -137,7 +137,9 @@ def discover_mods(cfg: Dict) -> List[ModItem]:
 
     order: List = []
     groups: Dict = {}
-    for p, is_dir in _iter_mod_sources(src_dir, recursive, include_folders):
+    from .import_registry import directory_mods
+
+    for p, is_dir in _iter_mod_sources(src_dir, recursive, include_folders, directory_mods(cfg)):
         if not is_dir and not (show_all or p.suffix.lower() in exts):
             continue
         key = p
@@ -163,23 +165,35 @@ def is_copy_install(cfg: Dict) -> bool:
 def apply_mod(mod: ModItem, overwrite: bool = False) -> Tuple[bool, str]:
     return apply_mods_batch([mod], overwrite)[0]
 
-def import_mod_file(cfg: Dict, src: Path, replace: bool = False) -> Tuple[bool, str]:
+def import_mod_file(cfg: Dict, src: Path, replace: bool = False, target_name: str = "") -> Tuple[bool, str]:
+    from .imports import PlannedMod, ignored_file, publish_plan
+
     dst_dir = Path(cfg.get("mods_source_dir") or "").expanduser()
     dst_dir.mkdir(parents=True, exist_ok=True)
-    dst = dst_dir / src.name
+    dst = dst_dir / (target_name or src.name)
     if dst.exists() and not replace:
         return False, "exists"
     if src.resolve() == dst.resolve():
         ensure_mod_records([dst.name])
         return True, dst.name
+    if src.is_symlink() or (hasattr(src, "is_junction") and src.is_junction()):
+        return False, "Linked import paths are unsupported."
+    directories = []
     if src.is_dir():
-        if dst.exists():
-            shutil.rmtree(dst)
-        shutil.copytree(src, dst)
+        members = []
+        for path in src.rglob("*"):
+            if path.is_symlink() or (hasattr(path, "is_junction") and path.is_junction()):
+                return False, f"Linked import paths are unsupported: {path.name}"
+            if path.is_file() and not ignored_file(path, cfg):
+                members.append((path, path.relative_to(src)))
+            elif path.is_dir():
+                directories.append(path.relative_to(src))
+        files = tuple(members)
+    elif ignored_file(src, cfg):
+        return False, f"Ignored extension: {src.name}"
     else:
-        shutil.copy2(src, dst)
-    ensure_mod_records([dst.name])
-    return True, dst.name
+        files = ((src, Path(dst.name)),)
+    return publish_plan(cfg, PlannedMod(dst.name, files, src.is_dir(), replace_existing=replace, directories=tuple(directories)))
 
 def mod_image_path(cfg: Dict, mod_name: str) -> Path | None:
     images_dir = Path(cfg.get("mods_source_dir") or "").expanduser() / "images"
