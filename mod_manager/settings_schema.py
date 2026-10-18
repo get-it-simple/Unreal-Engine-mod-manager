@@ -220,8 +220,31 @@ MODS_VIEW_FIELDS = (
     ),
 )
 
+IMPORT_FIELDS = (
+    FieldSpec(
+        key="archive_import_mode",
+        label="Default archive import mode",
+        tooltip="Together creates one folder named after the archive. Separate imports each selected file or related file group as a mod.",
+        kind=CHOICE,
+        choices=("together", "separate"),
+    ),
+    FieldSpec(
+        key="archive_preserve_structure",
+        label="Preserve archive folder structure",
+        tooltip="Keep paths inside the archive. Separate mode creates a folder for each mod. Turn off to flatten the imported files.",
+        kind=FLAG,
+    ),
+    FieldSpec(
+        key="import_ignore_extensions",
+        label="Ignored import extensions",
+        tooltip="Comma-separated extensions to exclude from new files, folders and archives, for example .txt,.md. Existing mods and explicitly assigned preview images are unaffected.",
+        kind=TEXT,
+    ),
+)
+
 SETTINGS_SECTIONS = (
     ("Lists", LIST_FIELDS),
+    ("Import", IMPORT_FIELDS),
     ("Appearance", APPEARANCE_FIELDS),
     ("Mods view", MODS_VIEW_FIELDS),
 )

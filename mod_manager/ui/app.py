@@ -9,7 +9,8 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from app_paths import APP_NAME, APP_VERSION
 
 from ..cli_utils import ensure_paths, open_folder, select_in_explorer
-from ..dragdrop import read_clipboard_image, read_clipboard_paths
+from ..dragdrop import clipboard_has_files, read_clipboard_image, read_clipboard_paths
+from ..imports import ignored_file, regular_import_tasks
 from ..models import ModItem
 from ..mods import (
     add_favorites_to_mods,
@@ -56,6 +57,7 @@ from .controllers import ACTIONS, SELECTION, WidgetRegistry
 from .controllers.settings_controller import SAVED_MESSAGE as SETTINGS_SAVED
 from .controllers.games_controller import GamesController
 from .controllers.settings_controller import SettingsController
+from .controllers.archive_import_controller import ArchiveImportController
 from .dialogs import prompts
 from .dialogs.base import close_dialog, show_dialog, themed_dialog
 from .dialogs.game_profile import GameProfileDialog
@@ -158,6 +160,7 @@ class ModManagerGui(QtWidgets.QMainWindow):
         self.runner.statusChanged.connect(self.statusBar().showMessage)
         self.runner.failed.connect(lambda message: show_error(self, "Error", message))
         self.runner.busyChanged.connect(self._on_busy_changed)
+        self.archive_import = ArchiveImportController(self)
         self._init_theme()
         self.context = AppContext(self.cfg, self.theme, self.runner)
         self.registry = WidgetRegistry()
@@ -217,6 +220,7 @@ class ModManagerGui(QtWidgets.QMainWindow):
         self.cfg["window_height"] = self.height()
         self._save_tile_splitter_sizes()
         save_config(self.cfg)
+        self.archive_import.shutdown()
         self.runner.shutdown()
         for attr in ("_table_drop_target", "_tiles_drop_target"):
             target = getattr(self, attr, None)
@@ -327,6 +331,12 @@ class ModManagerGui(QtWidgets.QMainWindow):
         return complete(line_edit)
 
     def eventFilter(self, obj, event):
+        if event.type() in (QtCore.QEvent.ShortcutOverride, QtCore.QEvent.KeyPress) and event.matches(QtGui.QKeySequence.Paste):
+            if isinstance(obj, QtWidgets.QWidget) and obj.window() in (self, self.archive_import.dialog) and clipboard_has_files():
+                event.accept()
+                if event.type() == QtCore.QEvent.KeyPress:
+                    self._handle_paste()
+                return True
         if event.type() == QtCore.QEvent.KeyPress and event.key() == QtCore.Qt.Key_Tab:
             line_edit = self._completion_line_edit_for_object(obj)
             if line_edit is not None and self._complete_line_edit(line_edit):
@@ -1534,9 +1544,14 @@ class ModManagerGui(QtWidgets.QMainWindow):
             self._handle_mods_drop(paths)
 
     def _handle_mods_drop(self, paths, x: int = 0, y: int = 0, target_mod_name: str = "") -> None:
-        self._import_paths([Path(p) for p in paths], image_target_name=target_mod_name)
+        if getattr(paths, "temporary_root", None) is None:
+            paths = [Path(path) for path in paths]
+        self._import_paths(paths, image_target_name=target_mod_name)
 
     def _handle_paste(self, event=None) -> None:
+        if self.archive_import.dialog is not None:
+            self.archive_import.paste()
+            return
         paths = read_clipboard_paths()
         if paths:
             self._handle_clipboard_paths(paths)
@@ -1559,27 +1574,38 @@ class ModManagerGui(QtWidgets.QMainWindow):
         return names[0] if len(names) == 1 else ""
 
     def _import_paths(self, paths: List[Path], image_target_name: str = "") -> None:
+        if self.archive_import.handle_paths(paths, image_target_name):
+            return
+        self._import_regular_paths(paths, image_target_name)
+
+    def _import_regular_paths(self, paths: List[Path], image_target_name: str = "") -> None:
         if not ensure_paths(self.cfg):
             return
         existing = {m.name for m in self.current_mod_items}
-        tasks = []
+        mod_paths = [path for path in paths if is_mod_file(path, self.cfg) and not ignored_file(path, self.cfg)]
+        tasks = regular_import_tasks(self.cfg, mod_paths, existing, lambda name: prompts.choose_import_conflict(self, name))
         image_mods = []
-        dropped_mods = {path.name for path in paths if is_mod_file(path, self.cfg)}
+        dropped_mods = {path.name for path in mod_paths}
+        imported_names = {}
+        for kind, source, name, _replace in tasks:
+            if kind == "group":
+                for member, _relative in source.files:
+                    imported_names[member.name] = source.name
+            else:
+                imported_names[source.name] = name or source.name
         for path in paths:
             if is_image_file(path):
                 if path.stem in dropped_mods:
-                    mod_name = path.stem
+                    mod_name = imported_names.get(path.stem, "")
                 else:
                     mod_name = image_target_name or self._choose_mod_for_image(path.stem)
                 if mod_name:
                     tasks.append(("image", path, mod_name, False))
                     image_mods.append(mod_name)
-            elif is_mod_file(path, self.cfg):
-                replace = path.name in existing and prompts.ask_yes_no(
-                    self, "Import", f"Replace existing mod '{path.name}'?"
-                )
-                tasks.append(("mod", path, "", replace))
         if not tasks:
+            release = getattr(paths, "close", None)
+            if release:
+                release()
             return
 
         def done(result):
@@ -1593,7 +1619,17 @@ class ModManagerGui(QtWidgets.QMainWindow):
             else:
                 self.refresh_mods()
 
-        self._run_action("Importing...", lambda: _run_import_batch(self.cfg, tasks), done)
+        cfg = dict(self.cfg)
+
+        def worker():
+            try:
+                return _run_import_batch(cfg, tasks)
+            finally:
+                release = getattr(paths, "close", None)
+                if release:
+                    release()
+
+        self._run_action("Importing...", worker, done)
 
     def _import_mod_files(self) -> None:
         files = prompts.choose_files(self, "Import mod files")

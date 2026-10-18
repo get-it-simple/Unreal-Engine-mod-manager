@@ -9,7 +9,7 @@ A symlink-based mod manager for Unreal Engine games. Manages mods as symbolic li
 ---
 
 <details>
-<summary>Run, Build, Test details</summary>
+<summary>Running from source</summary>
 
 
 ## Quick Start
@@ -35,7 +35,7 @@ python mod-manager.py gui
 <summary>Onedir app (recommended — faster startup)</summary>
 
 ```powershell
-python build-gui-exe.py --exe --onedir
+python build-gui-exe.py --exe --onedir --no-clean-before
 # Output: dist\mod-manager-gui\mod-manager-gui.exe
 ```
 
@@ -47,7 +47,7 @@ The build script checks for required GUI/build packages and, in an interactive s
 <summary>Onefile app (single executable, slower startup)</summary>
 
 ```powershell
-python build-gui-exe.py --exe --onefile
+python build-gui-exe.py --exe --onefile --no-clean-before
 # Output: dist\mod-manager-gui.exe
 ```
 
@@ -63,74 +63,10 @@ python build-gui-exe.py --pyz
 
 </details>
 
-Environment variables are still supported for compatibility:
-
-```powershell
-$env:MOD_MANAGER_BUILD_EXE="1"
-$env:MOD_MANAGER_ONEFILE="1"
-python build-gui-exe.py
-```
-
-The `assets/icon.ico` file is used as the executable icon and the `assets/` folder is bundled with `--exe` builds so the GUI window also shows it. Regenerate the icon with `python tools/generate_icon.py` (requires Pillow).
-
----
-
-
-## Tests
-
-Run the full test suite with:
-
-```bash
-python tests/run_tests.py --jobs auto
-```
-
-The parallel runner discovers every individual test case in `tests/test_*.py` and runs them across available workers. Use `--jobs 1` for a serial run. The tests cover CLI request parsing and dispatch, the `python mod-manager.py` launcher modes, and core GUI flows with filesystem, dialogs, and link operations patched out.
-
-Each test gets its own process with a timeout (`--timeout`, 60 seconds by default). A test that exceeds it is killed and reported as a failure instead of blocking the run, so a stray modal dialog or an unfinished background worker can never hang the suite. `tests/qt_support.py` also turns an unexpected modal dialog into an immediate failure and disposes each window properly, which keeps the GUI tests fast.
-
-The standard unittest command is still supported:
-
-```bash
-python -m unittest discover -s tests -p "test_*.py"
-```
-
-`tests/test_architecture.py` is an architecture guard: it fails if a module outside `mod_manager/ui/` imports PySide6, if the token modules stop being Qt-free, or if a colour literal appears outside `mod_manager/ui/theme/colors.py`.
+`--no-clean-before` keeps the other build format when creating a new one. Without it, the builder removes previous formats. Rebuilding can replace the selected output folder; keep valuable application data outside build outputs.
 </details>
 
 ---
-
-<details>
-<summary>Project Structure</summary>
-
-```
-app_paths.py                    App identity, paths, DEFAULT_CONFIG
-mod_manager/
-  cli.py  menus.py              Command line and console menus
-  mods.py  presets.py  links.py Mod discovery, presets, link management
-  storage.py  workers.py        JSON storage, background workers
-  dragdrop.py  image.py         Windows COM drag/drop, image scaling
-  settings_schema.py            Setting labels, tooltips, ranges, validation (Qt-free)
-  ui/
-    __init__.py                 Startup: config -> UI scale -> Qt -> window
-    gui shell (gui.py)          Main window
-    context.py  task_runner.py  Shared app state and background actions
-    icons.py                    Standard and painted icons
-    theme/
-      colors.py                 Every colour, light and dark (Qt-free)
-      tokens.py                 Every size, padding, radius, column spec (Qt-free)
-      stylesheet.py             Stylesheet generated from colours and tokens
-      accent.py  manager.py     OS accent detection and theme application
-    widgets/                    Reusable components: buttons, toolbar sections,
-                                forms, pager, detail panel, drop target
-    models/                     Table models, tile delegate, column setup
-    pages/toolbar_specs.py      Declarative action button groups
-    dialogs/                    Dialog shells and modal prompts
-    controllers/                Widget registry and action wiring
-tests/                          unittest suite plus the architecture guard
-```
-
-Action buttons are never placed in a flat row. Each group is declared in `mod_manager/ui/pages/toolbar_specs.py` as `(section key, caption, actions)` and rendered by `IconToolbar` as a captioned bordered section.
-</details>
 
 <details>
 <summary>Features</summary>
@@ -149,12 +85,39 @@ Action buttons are never placed in a flat row. Each group is declared in `mod_ma
 - Broken link detection and cleanup
 - GUI (PySide6/Qt) and CLI interfaces
 - Drag, drop, paste, or pick mod files/folders in the GUI
+- Import nested ZIP, 7z and RAR archives, with a manager for choosing separate variants or adding them together
 - Optional local image for mods
 - List and tile view modes in the GUI
 - Tile view preview images, installed markers, keyboard navigation, and zoom
 - Virtual rendering keeps off-screen mod rows and tiles from being drawn beyond a one-row buffer
 
 ---
+
+</details>
+
+<details>
+<summary>Importing archives and mod options</summary>
+
+Drop or paste archive files into the application, or select them with **Import mod files**.
+On Windows, files and nested folders copied or dragged from an archive opened in Explorer are also supported.
+ZIP, 7z and RAR files can contain mods at any folder depth; a separate 7-Zip installation is unnecessary on Windows x64.
+
+One archive with one mod imports automatically using your defaults. Multiple mods or archives open the import manager:
+
+- With multiple archives, use the compact, full-width row of filename buttons. The mouse wheel over the row switches archives; **←/→** does the same while the row has focus. Overflowing buttons scroll into view. Names stay centered on hover and show up to 32 characters, with the full name available in a tooltip. For a single archive, the row is hidden and its filename appears above the import options.
+- **Add files together** creates one mod folder named after the archive. Turn it off to choose individual mods with checkboxes. Configured related file types stay together as one option.
+- **Preserve archive folder structure** keeps the original paths. Without it, files are flattened. Separate mode with preserved structure creates a folder for each selected mod.
+- In separate mode, select a mod and paste an image, or drop an image onto its row. Dropping an image elsewhere in the import window assigns it to the selected mod.
+- **Add** imports the choices across all archives. **Cancel** discards the prepared import. Existing names offer **Replace**, **Keep both** with numbered names, or **Skip**.
+
+Settings → **Import** controls the default mode (together), structure preservation (off), and ignored extensions (initially empty).
+The ignored list accepts comma-separated values such as `.txt,.md` and applies to files, folder contents, and archives during import.
+Explicitly assigned preview images are independent of that filter. Importing never deletes the original archives or source files.
+
+Imported folder mods remain visible even when a profile's file filter contains only `.pak`.
+Folder mods install under their own folder name using the profile's link or copy mode.
+Password-protected archives and archive links are unsupported; errors identify the affected archive.
+Archives inside other archives are not unpacked recursively.
 
 </details>
 
@@ -189,6 +152,7 @@ pip install -r requirements.txt
 - `config.json` stores application settings and game profile definitions.
 - `profiles/<profile-id>-presets.json` stores named mod sets for each game profile.
 - `profiles/<profile-id>-labels.json` stores labels plus last-managed metadata for each game profile.
+- `profiles/<profile-id>-imports.json` records explicitly imported folder mods, scoped to their source directory (`default-imports.json` when no profile is active).
 - `labels.json` also stores the reserved `__favorites__` map, keyed by game profile ID; existing flat label records remain supported.
 - Existing global `presets.json` and label records remain supported when no game profile exists.
 - `<mods_source_dir>/images` stores optional mod image and is not treated as a mod folder.
@@ -218,15 +182,14 @@ All commands follow the pattern: `python mod-manager.py <command> <subcommand> [
 ```
 --game-mods-dir <path>
 --mods-source-dir <path>
---mod-extensions <exts>                       Comma-separated, e.g. .pak,.rar,.utoc
+--mod-extensions <exts>                       Comma-separated, e.g. .pak,.utoc
 --mod-group-extensions <exts>                 Comma-separated, e.g. .pak,.utoc,.ucas
 --mod-recursive-scan / --no-mod-recursive-scan  Scan subfolders of the source directory
 --link-prefix <text>
 --install-mode link|copy                      How mods reach the game folder
 ```
 
-These flags are generated from `mod_manager/settings_schema.py`, so `games add --help` prints the same
-description that the GUI shows as a tooltip on the matching Game profile field.
+`games add --help` prints the same descriptions shown as tooltips in the GUI's Game profile fields.
 
 `--mod-extensions` accepts any number of comma-separated extensions (e.g. `.pak,.utoc,.ucas`). Add the special `folders` token (e.g. `.pak,folders`) to also treat subfolders of the source directory as mod units. If `--mod-extensions` is empty (the default), every file and folder is shown — this matches the previous behavior. If `--mod-extensions` is set without `folders`, subfolders are no longer treated as mods unless `folders` is included.
 
@@ -329,6 +292,9 @@ python mod-manager.py presets delete 2,3
 --max-preset-name-len <n>
 --max-label-name-len <n>
 --gui-theme system|light|dark
+--archive-import-mode together|separate
+--archive-preserve-structure / --no-archive-preserve-structure
+--import-ignore-extensions <exts>            Comma-separated, e.g. .txt,.md
 --gui-accent-color-mode system|custom
 --gui-accent-color <#rrggbb>
 --gui-text-color-mode system|custom
@@ -341,7 +307,7 @@ python mod-manager.py presets delete 2,3
 --placeholder-image-col-width <n>
 ```
 
-These flags are generated from `mod_manager/settings_schema.py`, so `settings set --help` prints the same description that the GUI shows as a tooltip, and the same validation applies to both.
+`settings set --help` prints the descriptions shown as tooltips in the GUI, and the same validation applies to both.
 
 Game-specific paths, extension, grouping and install settings (`mods_source_dir`, `game_mods_dir`, `mod_extensions`, `mod_group_extensions`, `mod_recursive_scan`, `link_prefix`, `install_mode`) are not application settings. They are edited only through `games add` / `games edit` and the GUI "Game profile" dialog, and a settings update never changes them. `settings show` still prints the values of the active profile.
 
@@ -349,7 +315,7 @@ In the GUI, the "Game profile" dialog (Games > Add/Edit) shows every per-game fi
 
 #### Settings labels and tooltips
 
-Every setting is defined once in `mod_manager/settings_schema.py` with a human-readable label, a description shown as a hover tooltip, and its allowed range. The Settings dialog and the Game profile dialog are both generated from that schema, so a setting only ever has one label and one description.
+Settings have human-readable labels, explanatory tooltips, and validated ranges in both the Settings and Game profile dialogs.
 
 The dialog groups the settings into three compact bordered sections:
 
@@ -370,8 +336,6 @@ The accent color used for highlights, the installed badge, and active buttons fo
 The general text color (window, button, and tooltip text) also follows the system theme by default. Set `--gui-text-color-mode custom` with `--gui-text-color <#rrggbb>` to override it with a fixed color.
 
 In the GUI, the Settings dialog shows a "Choose" color picker and a live "Theme preview" row for both the accent and text colors. Clicking the preview checkmark or "Aa" badge toggles that color between "system" and "custom" mode. The custom colour rows stay hidden while the matching mode is "system".
-
-All GUI colours are defined in `mod_manager/ui/theme/colors.py` and all sizes, paddings, radii and column widths in `mod_manager/ui/theme/tokens.py`. The stylesheet is generated from those two files, so light and dark themes stay in step.
 
 **Examples:**
 

@@ -13,24 +13,26 @@ def build_stylesheet(palette: Palette) -> str:
         QMainWindow, QDialog {{
             background-color: {palette.bg};
         }}
-        QPushButton[variant="acrylic"] {{
+        QPushButton[variant="acrylic"], QListView[variant="archiveSelector"]::item {{
             background-color: {palette.button_normal};
             border: none;
             border-radius: {tokens.RADIUS_LG}px;
-            padding: {button_pad_v}px {button_pad_h}px;
             color: {palette.control_fg};
         }}
-        QPushButton[variant="acrylic"]:hover {{
+        QPushButton[variant="acrylic"] {{
+            padding: {button_pad_v}px {button_pad_h}px;
+        }}
+        QPushButton[variant="acrylic"]:hover, QListView[variant="archiveSelector"]::item:hover {{
             background-color: {palette.button_hover};
         }}
-        QPushButton[variant="acrylic"]:pressed {{
+        QPushButton[variant="acrylic"]:pressed, QListView[variant="archiveSelector"]::item:pressed {{
             background-color: {palette.button_pressed};
         }}
-        QPushButton[variant="acrylic"]:checked {{
+        QPushButton[variant="acrylic"]:checked, QListView[variant="archiveSelector"]::item:selected {{
             background-color: {palette.accent_fill};
             border: {tokens.BORDER_WIDTH}px solid {palette.accent_border};
         }}
-        QPushButton[variant="acrylic"]:disabled {{
+        QPushButton[variant="acrylic"]:disabled, QListView[variant="archiveSelector"]::item:disabled {{
             background-color: {palette.button_disabled};
         }}
         QFrame[variant="toolbarSection"] {{
@@ -128,6 +130,12 @@ def build_stylesheet(palette: Palette) -> str:
         }}
         QAbstractItemView {{
             outline: 0;
+        }}
+        QListView[variant="archiveSelector"] {{
+            background: {palette.bg};
+        }}
+        QListView[variant="archiveSelector"]::item:focus {{
+            border: {tokens.BORDER_WIDTH}px solid {palette.control_fg};
         }}
         QTableView::item:selected {{
             background-color: {palette.accent};

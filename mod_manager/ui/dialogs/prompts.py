@@ -41,3 +41,16 @@ def choose_open_file(parent, title: str, file_filter: str = "") -> str:
 
 def choose_color(parent, current: QtGui.QColor, title: str) -> QtGui.QColor:
     return QtWidgets.QColorDialog.getColor(current, parent, title)
+
+
+def choose_import_conflict(parent, name: str) -> str:
+    dialog = QtWidgets.QMessageBox(parent)
+    dialog.setWindowTitle("Import name conflict")
+    dialog.setText(f"The import target '{name}' already exists. Choose how to import the new mod.")
+    replace = dialog.addButton("Replace", QtWidgets.QMessageBox.DestructiveRole)
+    keep = dialog.addButton("Keep both", QtWidgets.QMessageBox.AcceptRole)
+    skip = dialog.addButton("Skip", QtWidgets.QMessageBox.RejectRole)
+    dialog.setDefaultButton(keep)
+    dialog.setEscapeButton(skip)
+    dialog.exec()
+    return "replace" if dialog.clickedButton() is replace else "keep_both" if dialog.clickedButton() is keep else "skip"
