@@ -104,7 +104,7 @@ ZIP, 7z and RAR files can contain mods at any folder depth; a separate 7-Zip ins
 
 One archive with one mod imports automatically using your defaults. Multiple mods or archives open the import manager:
 
-- Switch between archives with **F1, F2, …**; the selected archive's filename appears underneath.
+- With multiple archives, use the compact, full-width row of filename buttons. The mouse wheel over the row switches archives; **←/→** does the same while the row has focus. Overflowing buttons scroll into view. Names stay centered on hover and show up to 32 characters, with the full name available in a tooltip. For a single archive, the row is hidden and its filename appears above the import options.
 - **Add files together** creates one mod folder named after the archive. Turn it off to choose individual mods with checkboxes. Configured related file types stay together as one option.
 - **Preserve archive folder structure** keeps the original paths. Without it, files are flattened. Separate mode with preserved structure creates a folder for each selected mod.
 - In separate mode, select a mod and paste an image, or drop an image onto its row. Dropping an image elsewhere in the import window assigns it to the selected mod.
