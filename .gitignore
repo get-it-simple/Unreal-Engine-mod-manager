@@ -9,4 +9,7 @@ dist
 build
 mod-manager-gui.spec
 mod-manager.log
-PROJECT_INSTRUCTIONS.md
+PROJECT_*
+.venv/
+.venv-backup-*/
+.pytest_cache/
