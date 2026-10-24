@@ -1,6 +1,8 @@
 # Mod Manager
 
-A symlink-based mod manager for Unreal Engine games. Manages mods as symbolic links (files) and junctions (folders) in the game directory — no file copying. Games that cannot load linked files can switch a profile to physical copying instead.
+A symlink-based mod manager for Unreal Engine games and most other engines, supports both copy or symlink-based mods.
+Manages mods as symbolic links (files) and junctions (folders) in the game directory — no file copying. Games that cannot load linked files can switch a profile to physical copying instead.
+Supports copy based installation so the games that rejects symlink based mods will work without issues.
 
 ---
 
