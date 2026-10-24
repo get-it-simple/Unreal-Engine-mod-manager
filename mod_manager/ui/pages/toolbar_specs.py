@@ -34,7 +34,7 @@ MODS_ACTION_SECTIONS = (
     ("import", "Import", (
         ("import_files", "import", "Import mod files"),
         ("import_folder", "folder", "Import a mod folder"),
-        ("set_image", "image", "Set preview image for the selected mod"),
+        ("set_image", "image", "Set preview image for selected mods from the clipboard or a file; confirm when applying to multiple mods"),
     )),
 )
 

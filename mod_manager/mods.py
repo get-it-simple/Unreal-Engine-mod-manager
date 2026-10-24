@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -216,6 +217,27 @@ def import_mod_image(cfg: Dict, mod_name: str, src: Path) -> Tuple[bool, str]:
     if src.resolve() != dst.resolve():
         shutil.copy2(src, dst)
     return True, dst.name
+
+def import_mod_images(cfg: Dict, names: list[str], src: Path) -> tuple[list[str], list[str]]:
+    applied, errors = [], []
+    images_dir = Path(cfg.get("mods_source_dir") or "").expanduser() / "images"
+    for name in names:
+        try:
+            images_dir.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix=".mod-preview-", dir=images_dir) as staging:
+                staged_cfg = {**cfg, "mods_source_dir": staging}
+                ok, message = import_mod_image(staged_cfg, name, src)
+                if ok:
+                    (Path(staging) / "images" / message).replace(images_dir / message)
+        except OSError as exc:
+            errors.append(f"{name}: {exc}")
+        else:
+            if ok:
+                applied.append(name)
+            else:
+                errors.append(f"{name}: {message}")
+    return applied, errors
+
 
 def _pending_files(mod: ModItem, overwrite: bool) -> List[ModFile]:
     """Members to write: everything when replacing, otherwise only what a half installed group misses."""

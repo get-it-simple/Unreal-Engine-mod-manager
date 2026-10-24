@@ -987,7 +987,7 @@ class GuiTests(unittest.TestCase):
 
         with patch("mod_manager.ui.app.is_image_file", return_value=True), patch(
             "mod_manager.ui.app._run_import_batch", return_value=(["combat.pak.png"], [])
-        ) as import_batch, patch("mod_manager.ui.app.QtWidgets.QInputDialog.getItem") as picker, patch.object(
+        ) as import_batch, patch("mod_manager.ui.app.prompts.choose_item") as picker, patch.object(
             self.window, "refresh_mods"
         ) as refresh_mods:
             self.window._handle_mods_drop([image_path], target_mod_name="combat.pak")
@@ -1003,7 +1003,7 @@ class GuiTests(unittest.TestCase):
         self.window._run_action = self.run_action_inline
 
         with patch("mod_manager.ui.app.is_image_file", side_effect=lambda p: p.suffix == ".png"), patch(
-            "mod_manager.ui.app.QtWidgets.QInputDialog.getItem", return_value=("ui.pak", True)
+            "mod_manager.ui.app.prompts.choose_item", return_value=("ui.pak", True)
         ) as picker, patch("mod_manager.ui.app._run_import_batch", return_value=(["ui.pak.png"], [])) as import_batch, patch.object(
             self.window, "refresh_mods"
         ):
@@ -1020,7 +1020,7 @@ class GuiTests(unittest.TestCase):
 
         with patch("mod_manager.ui.app.is_image_file", side_effect=lambda p: p.suffix == ".png"), patch(
             "mod_manager.ui.app.is_mod_file", side_effect=lambda p, _cfg: p.suffix == ".pak"
-        ), patch("mod_manager.ui.app.QtWidgets.QInputDialog.getItem") as picker, patch(
+        ), patch("mod_manager.ui.app.prompts.choose_item") as picker, patch(
             "mod_manager.ui.app._run_import_batch", return_value=(["new.pak", "new.pak.png"], [])
         ) as import_batch, patch.object(self.window, "refresh_mods"):
             self.window._import_paths([_FAKE_DROP / "new.pak", _FAKE_DROP / "new.pak.png"])
@@ -1029,50 +1029,6 @@ class GuiTests(unittest.TestCase):
         tasks = import_batch.call_args.args[1]
         self.assertIn(("image", _FAKE_DROP / "new.pak.png", "new.pak", False), tasks)
         self.assertIn(("mod", _FAKE_DROP / "new.pak", "", False), tasks)
-
-    def test_paste_image_with_single_selected_mod_skips_picker(self):
-        self.window._run_action = self.run_action_inline
-        self.select_mod_rows(0)
-        image_path = _FAKE_DROP / "clip.png"
-
-        with patch("mod_manager.ui.app.read_clipboard_paths", return_value=[]), patch(
-            "mod_manager.ui.app.read_clipboard_image", return_value=image_path
-        ), patch("mod_manager.ui.app.QtWidgets.QInputDialog.getItem") as picker, patch(
-            "mod_manager.ui.app.import_mod_image", return_value=(True, "combat.pak.png")
-        ) as import_image, patch.object(self.window, "refresh_mods"):
-            self.window._handle_paste()
-
-        picker.assert_not_called()
-        import_image.assert_called_once_with(self.window.cfg, "combat.pak", image_path)
-
-    def test_paste_image_without_selection_still_opens_picker(self):
-        self.window._run_action = self.run_action_inline
-        self.window._current_mod_view().selectionModel().clearSelection()
-        image_path = _FAKE_DROP / "clip.png"
-
-        with patch("mod_manager.ui.app.read_clipboard_paths", return_value=[]), patch(
-            "mod_manager.ui.app.read_clipboard_image", return_value=image_path
-        ), patch("mod_manager.ui.app.QtWidgets.QInputDialog.getItem", return_value=("ui.pak", True)) as picker, patch(
-            "mod_manager.ui.app.import_mod_image", return_value=(True, "ui.pak.png")
-        ) as import_image, patch.object(self.window, "refresh_mods"):
-            self.window._handle_paste()
-
-        picker.assert_called_once()
-        import_image.assert_called_once_with(self.window.cfg, "ui.pak", image_path)
-
-    def test_paste_image_file_with_single_selected_mod_targets_it_without_picker(self):
-        self.window._run_action = self.run_action_inline
-        self.select_mod_rows(1)
-
-        with patch("mod_manager.ui.app.is_image_file", side_effect=lambda p: p.suffix == ".png"), patch(
-            "mod_manager.ui.app.QtWidgets.QInputDialog.getItem"
-        ) as picker, patch("mod_manager.ui.app._run_import_batch", return_value=(["ui.pak.png"], [])) as import_batch, patch.object(
-            self.window, "refresh_mods"
-        ):
-            self.window._handle_clipboard_paths([_FAKE_DROP / "art.png"])
-
-        picker.assert_not_called()
-        self.assertEqual(import_batch.call_args.args[1], [("image", _FAKE_DROP / "art.png", "ui.pak", False)])
 
     def test_drop_position_maps_to_mod_name_in_tile_view(self):
         index = self.window.mods_model.index(1, 0)

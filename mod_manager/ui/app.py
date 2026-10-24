@@ -21,7 +21,6 @@ from ..mods import (
     existing_targets,
     import_mod_file,
     is_copy_install,
-    import_mod_image,
     is_image_file,
     is_mod_file,
     list_broken_links,
@@ -58,6 +57,7 @@ from .controllers.settings_controller import SAVED_MESSAGE as SETTINGS_SAVED
 from .controllers.games_controller import GamesController
 from .controllers.settings_controller import SettingsController
 from .controllers.archive_import_controller import ArchiveImportController
+from .controllers.preview_controller import PreviewController
 from .dialogs import prompts
 from .dialogs.base import close_dialog, show_dialog, themed_dialog
 from .dialogs.game_profile import GameProfileDialog
@@ -161,6 +161,7 @@ class ModManagerGui(QtWidgets.QMainWindow):
         self.runner.failed.connect(lambda message: show_error(self, "Error", message))
         self.runner.busyChanged.connect(self._on_busy_changed)
         self.archive_import = ArchiveImportController(self)
+        self.previews = PreviewController(self)
         self._init_theme()
         self.context = AppContext(self.cfg, self.theme, self.runner)
         self.registry = WidgetRegistry()
@@ -950,7 +951,7 @@ class ModManagerGui(QtWidgets.QMainWindow):
         for row in rows:
             idx = self.mods_model.index(row, 0)
             selection.select(idx, QtCore.QItemSelectionModel.Select | QtCore.QItemSelectionModel.Rows)
-            view.setCurrentIndex(idx)
+            selection.setCurrentIndex(idx, QtCore.QItemSelectionModel.NoUpdate)
         self._update_mod_selection_actions()
 
     def _current_mod_view(self):
@@ -1558,15 +1559,12 @@ class ModManagerGui(QtWidgets.QMainWindow):
             return
         image = read_clipboard_image()
         if image:
-            mod_name = self._single_selected_mod_name() or self._choose_mod_for_image()
-            if mod_name:
-                def done(_result):
-                    self._invalidate_mod_image(mod_name)
-                    self.refresh_mods([mod_name])
-
-                self._run_action("Importing image...", lambda: import_mod_image(self.cfg, mod_name, image), done)
+            self.previews.paste_image(image)
 
     def _handle_clipboard_paths(self, paths: List[Path]) -> None:
+        if paths and all(is_image_file(path) for path in paths):
+            self.previews.paste_paths(paths)
+            return
         self._import_paths(paths, image_target_name=self._single_selected_mod_name())
 
     def _single_selected_mod_name(self) -> str:
@@ -1645,22 +1643,11 @@ class ModManagerGui(QtWidgets.QMainWindow):
         if not names:
             return ""
         current = names.index(default_name) if default_name in names else 0
-        name, ok = QtWidgets.QInputDialog.getItem(self, "Mod image", "Mod", names, current, False)
+        name, ok = prompts.choose_item(self, "Mod image", "Mod", names, current)
         return name if ok else ""
 
     def _set_mod_image(self) -> None:
-        names = self._selected_mod_names()
-        if not names:
-            return
-        file_name = prompts.choose_open_file(self, "Set mod image")
-        if not file_name:
-            return
-        mod_name = names[0]
-        def done(_result):
-            self._invalidate_mod_image(mod_name)
-            self.refresh_mods([mod_name])
-
-        self._run_action("Importing image...", lambda: import_mod_image(self.cfg, mod_name, Path(file_name)), done)
+        self.previews.choose()
 
 
 def _app_icon() -> QtGui.QIcon | None:

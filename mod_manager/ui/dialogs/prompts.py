@@ -43,6 +43,21 @@ def choose_color(parent, current: QtGui.QColor, title: str) -> QtGui.QColor:
     return QtWidgets.QColorDialog.getColor(current, parent, title)
 
 
+def choose_preview_image(parent, source, count: int, clipboard: bool = False) -> str:
+    from .preview_confirmation import PreviewConfirmationDialog
+
+    dialog = PreviewConfirmationDialog(parent, source, count, clipboard)
+    try:
+        dialog.exec()
+        return dialog.choice
+    finally:
+        dialog.deleteLater()
+
+
+def choose_item(parent, title: str, label: str, items: list[str], current: int = 0) -> tuple[str, bool]:
+    return QtWidgets.QInputDialog.getItem(parent, title, label, items, current, False)
+
+
 def choose_import_conflict(parent, name: str) -> str:
     dialog = QtWidgets.QMessageBox(parent)
     dialog.setWindowTitle("Import name conflict")

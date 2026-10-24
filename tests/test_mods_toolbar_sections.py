@@ -35,7 +35,10 @@ EXPECTED_ACTIONS = (
         "Remove label from selected mods",
         "Add or remove selected mods from favorites",
     )),
-    ("import", "Import", ("Import mod files", "Import a mod folder", "Set preview image for the selected mod")),
+    ("import", "Import", (
+        "Import mod files", "Import a mod folder",
+        "Set preview image for selected mods from the clipboard or a file; confirm when applying to multiple mods",
+    )),
 )
 
 

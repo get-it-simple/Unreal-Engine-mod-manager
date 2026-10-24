@@ -96,12 +96,27 @@ python build-gui-exe.py --pyz
 - GUI (PySide6/Qt) and CLI interfaces
 - Drag, drop, paste, or pick mod files/folders in the GUI
 - Import nested ZIP, 7z and RAR archives, with a manager for choosing separate variants or adding them together
-- Optional local image for mods
+- Optional local image for mods, including assigning one preview to multiple selected mods with confirmation
 - List and tile view modes in the GUI
 - Tile view preview images, installed markers, keyboard navigation, and zoom
 - Virtual rendering keeps off-screen mod rows and tiles from being drawn beyond a one-row buffer
 
 ---
+
+</details>
+
+<details>
+<summary>Mod preview images</summary>
+
+Select a mod and press **Ctrl+V** to set a copied image file, browser image, or screenshot as its preview.
+With multiple mods selected, a confirmation shows the image and the number of previews that will be replaced.
+Paste one image at a time. Without a selection, pasting an image lets you choose a mod.
+
+**Set preview image** first offers a usable image from the clipboard, with a thumbnail.
+Choose **Use image** to apply it, **Choose file...** to select another image, or **Cancel** to stop.
+If no single usable image is available, the file chooser opens directly.
+Applying to multiple mods always requires confirmation; accepting the clipboard offer also confirms that batch.
+Preview files are stored locally in the source folder's `images` directory. Original image files are preserved.
 
 </details>
 
